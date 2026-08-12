@@ -5,3 +5,5 @@ TC_*.pdf
 *_soa*.pdf
 ibkr-flex.xml
 .env
+.DS_Store
+ibkr-flex-sample.xml

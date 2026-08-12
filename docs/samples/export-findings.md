@@ -83,12 +83,18 @@ price/quantity sit on the fill:
 |---|---|---|
 | Fill row key | `IB Execution ID` | none — position in table under a `REF #` |
 | Order key | `IB Order ID` | `REF #` |
-| Cost attaches to | the **order** (first fill carries it) | the **day + side** (coarser still) |
-| Timestamp | `Trade Date` + `Trade Time` | trade **date** only, no time |
+| Cost attaches to | the **fill** — pro rata, see below | the **day + side** |
+| Timestamp | date + time, US Eastern | trade **date** only, no time |
 
-Both brokers therefore agree on the shape the trade record already assumes in
-[#6](https://github.com/ajitimur/automatic-trading-journal/issues/6): an append-only Fill
-ledger, with costs attached above the fill. Stockbit is simply the coarser of the two.
+**Corrected after seeing the real IBKR data.** This table originally claimed both brokers put
+cost above the fill. They do not: IBKR allocates commission pro rata across the fills of an
+order, so a genuine per-fill cost exists there. Stockbit has no per-fill cost at any
+granularity. See [`ibkr-flex-findings.md`](ibkr-flex-findings.md).
+
+The Fill ledger in [#6](https://github.com/ajitimur/automatic-trading-journal/issues/6) still
+holds, but it should let cost attach **at fill level where the broker provides it** and fall
+back to an allocation where it does not — rather than forcing both books to Stockbit's coarser
+shape and discarding information IBKR hands over for free.
 
 ## Two facts that bite
 
@@ -103,9 +109,15 @@ ledger, with costs attached above the fill. Stockbit is simply the coarser of th
 
 ---
 
-## IBKR — still outstanding
+## IBKR — obtained
 
-Not obtainable without portal access, and it cannot be done from the mailbox: the daily
+**Done.** One Activity Flex Query, 422 fills over a year, retrieved unattended. Full results
+in [`ibkr-flex-findings.md`](ibkr-flex-findings.md); the headline is that the research's
+"commission on the first fill only" rule is **wrong for this account** — commission is
+allocated pro rata across every fill, and following the documented rule would understate costs
+by ~60% on multi-fill orders. Trade timestamps are **US Eastern**, settled empirically.
+
+It could not be done from the mailbox: the daily
 "Daily Activity Statement" email from `donotreply@interactivebrokers.com` is a **notification
 only** — it carries no attachment and directs the reader to log in. This is confirmed against
 the real emails, and it is precisely why #4 chose the Flex Web Service.
