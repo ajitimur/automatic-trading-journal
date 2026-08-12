@@ -291,30 +291,74 @@ Expiry surfaces as error 1012, which the daily job must escalate, not retry."
 stage "Fetch the statement"
 say "Two GETs: SendRequest, then poll GetStatement until the report is built."
 printf '\n'
-FLEX_BASE="https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+FLEX_HOST="ndcdyn.interactivebrokers.com"
+FLEX_BASE="https://$FLEX_HOST/AccountManagement/FlexWebService"
 IBKR_XML="$VAULT/ibkr-flex.xml"
 
-resp="$(curl -s --get "$FLEX_BASE/SendRequest" \
-        --data-urlencode "t=$IBKR_FLEX_TOKEN" \
-        --data-urlencode "q=$IBKR_QUERY_ID" \
-        --data-urlencode "v=3" || true)"
+# Some Indonesian ISPs (Telkom/IndiHome among them) intercept DNS for
+# interactivebrokers.com and answer with their own block-page address —
+# 114.7.173.x rather than IBKR's Akamai edge. The TLS handshake then fails and
+# curl returns an EMPTY body, which looks nothing like a token problem and sent
+# the first run of this wizard down the wrong path entirely.
+#
+# So: resolve the host over encrypted DNS (which the ISP cannot rewrite) and
+# pin that address with --resolve. Looked up fresh each run because the Akamai
+# edge address rotates — never hardcode it.
+FLEX_RESOLVE=()
+resolved="$(curl -sS -m 15 -H 'accept: application/dns-json' \
+            "https://1.1.1.1/dns-query?name=$FLEX_HOST&type=A" 2>/dev/null \
+            | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+for a in d.get("Answer", []):
+    if a.get("type") == 1:
+        print(a["data"]); break' 2>/dev/null || true)"
+
+if [[ -n "$resolved" ]]; then
+  local_dns="$(dig +short "$FLEX_HOST" 2>/dev/null | head -n1 || true)"
+  FLEX_RESOLVE=(--resolve "$FLEX_HOST:443:$resolved")
+  if [[ -n "$local_dns" && "$local_dns" != "$resolved" ]]; then
+    warn "your DNS answers $local_dns for $FLEX_HOST, but the real address is"
+    warn "$resolved — your ISP is intercepting it. Working around it."
+  else
+    note "resolved $FLEX_HOST → $resolved"
+  fi
+else
+  note "encrypted DNS lookup unavailable; using system DNS"
+fi
+
+flex_get() {  # flex_get <endpoint> <q-value> [-o outfile]
+  local ep="$1" qv="$2"; shift 2
+  curl -sS -m 90 "${FLEX_RESOLVE[@]+"${FLEX_RESOLVE[@]}"}" --get "$FLEX_BASE/$ep" \
+    --data-urlencode "t=$IBKR_FLEX_TOKEN" \
+    --data-urlencode "q=$qv" \
+    --data-urlencode "v=3" "$@"
+}
+
+resp="$(flex_get SendRequest "$IBKR_QUERY_ID" || true)"
 refcode="$(printf '%s' "$resp" | sed -n 's:.*<ReferenceCode>\(.*\)</ReferenceCode>.*:\1:p')"
 
 if [[ -z "$refcode" ]]; then
   warn "SendRequest returned no reference code. Response:"
-  printf '\n%s%s%s\n\n' "$DIM" "$resp" "$RESET"
-  note "1012 = token expired · 1015 = token invalid · 1013 = IP restriction"
-  note "Fix it in the portal and re-run — entered values are remembered."
+  printf '\n%s%s%s\n\n' "$DIM" "${resp:-(empty)}" "$RESET"
+  if [[ -z "${resp//[[:space:]]/}" ]]; then
+    warn "The response was EMPTY — that is a NETWORK problem, not your token."
+    note "Nothing reached IBKR. Check whether you are on a VPN, or whether your"
+    note "ISP is still intercepting DNS for $FLEX_HOST."
+  else
+    note "1012 = token expired · 1015 = token invalid · 1013 = IP restriction"
+    note "1020 = invalid request (usually a wrong query id or token)"
+    note "Fix it in the portal and re-run — entered values are remembered."
+  fi
   exit 1
 fi
 printf '  %s✓%s reference code obtained\n' "$GREEN" "$RESET"
 
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   sleep 3
-  curl -s --get "$FLEX_BASE/GetStatement" \
-       --data-urlencode "t=$IBKR_FLEX_TOKEN" \
-       --data-urlencode "q=$refcode" \
-       --data-urlencode "v=3" -o "$IBKR_XML" || true
+  flex_get GetStatement "$refcode" -o "$IBKR_XML" || true
   if grep -q "<FlexQueryResponse" "$IBKR_XML" 2>/dev/null; then
     printf '  %s✓%s retrieved (%s bytes)\n' \
       "$GREEN" "$RESET" "$(wc -c < "$IBKR_XML" | tr -d ' ')"

@@ -110,6 +110,33 @@ Not obtainable without portal access, and it cannot be done from the mailbox: th
 only** — it carries no attachment and directs the reader to log in. This is confirmed against
 the real emails, and it is precisely why #4 chose the Flex Web Service.
 
+### The network gotcha — this will bite the daily job
+
+**From this ISP, the Flex Web Service is unreachable, and it fails in the most misleading way
+possible.** Telkom/IndiHome intercepts DNS for `interactivebrokers.com` and answers with its
+own block-page address (`114.7.173.245/246`) instead of IBKR's Akamai edge. TLS then fails and
+`curl` returns an **empty body** — no HTTP status, no `ErrorCode`, nothing that looks like a
+Flex error. The first wizard run read that emptiness as a token problem and pointed at the
+wrong fix entirely.
+
+Verified: resolving the host over DNS-over-HTTPS and pinning it with `curl --resolve` returns
+`http=200` and a well-formed `<FlexStatementResponse>` from the same machine, same moment.
+
+Two consequences for the build:
+
+- **The Flex client must not treat an empty response as a Flex error.** It is a transport
+  failure and belongs in a different branch from the 1012/1015/1013 family — those need a
+  human in the portal, this needs a network fix. Conflating them sends whoever is on call to
+  the wrong place.
+- **This is now an input to the undecided hosting question in #1.** If the daily job runs on
+  this home connection it needs encrypted DNS or a VPN as a hard dependency. Cloud hosting
+  sidesteps it entirely. That is a real point in favour of not self-hosting on this line.
+
+The Akamai address rotated between two lookups minutes apart (`104.88.71.114` → `23.40.40.225`),
+so any workaround must resolve fresh per run and never hardcode an IP.
+
+### Running it
+
 `scripts/sample-exports-wizard.sh` walks the remaining steps: build the Activity Flex Query
 at `Level of Detail = Executions`, mint a long-lived token, fetch the XML, and probe it for
 the three items #4 could not settle from documentation — the timezone of `Trade Time`, the
