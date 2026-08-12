@@ -11,9 +11,14 @@
   floating bar / arrow keys), on a throwaway page — this repo is a spec, there is
   no app to host them in yet.
 
+    D — The landing          THE SETTLED DESIGN (default) — C's body, A's banner, a by-book
+                             strip of counts, strict week + open + unreviewed stragglers
     A — The week's tape      outcome-led, chronological, both books side by side, read-only
     B — Process scorecard    process-led, groupings first-class, rolling window, one book
     C — Exit workbench       excursion-led, per-Trade drilldown, carries actions, includes open Trades
+
+  A, B and C are kept as the primary source — the alternatives that were
+  actually on the table when D was chosen.
 
   Data below is fabricated but shaped to the field list settled in #7/#8/#9 and
   deliberately kept at realistic sample size (n=3..6 per book per week).
@@ -306,6 +311,46 @@ const TRADES = [
     note: 'Cut it ahead of the stop when it lost the 10.'
   },
   {
+    /* straggler — closed three weeks ago, never marked reviewed */
+    id: 'T-2026-0710-SMCI', book: 'US', sym: 'SMCI', state: 'closed', reviewed: false,
+    entry: '2026-07-10', entryPx: 58.20, qty: 300, stop: 55.40, stopProv: 'recorded',
+    setup: 'other', stack: 'mixed', regime: 'uptrend',
+    adr: 4.6, stopDistAdr: 1.05, chased: true, riskPct: 0.44, expPct: 8.8, rs63: -4.2, volRatio: 1.3,
+    maDist10: 0.6, maDist50: -1.4, off52w: -22.1,
+    realizedR: -0.42, days: 5,
+    mfe: { px: 60.90, date: '2026-07-13', adr: 1.01, r: 0.96 },
+    mae: { px: 55.10, date: '2026-07-17', adr: -1.16, r: -1.11 },
+    exits: [
+      { date: '2026-07-17', qty: 300, px: 57.02, reason: 'discretionary', day: 5,
+        exMfe: { px: 60.90, date: '2026-07-13', adr: 1.01 }, exMae: { px: 55.10, date: '2026-07-17', adr: -1.16 } }
+    ],
+    exitStack: 'mixed', maDist10Exit: -1.8,
+    adherence: { fit: 1.0, partialState: 'in_band', partialDelta: 1, trailDelta: -1, devCost: -0.22, nominal: 'MA10 / day3' },
+    fwd: { r20: -6.4, note: null },
+    note: ''
+  },
+  {
+    /* straggler */
+    id: 'T-2026-0715-MDKA', book: 'IDX', sym: 'MDKA', state: 'closed', reviewed: false,
+    entry: '2026-07-15', entryPx: 2350, qty: 30000, stop: 2240, stopProv: 'recorded',
+    setup: 'high_tight_flag', stack: 'aligned_up', regime: 'weak_downtrend',
+    adr: 2.5, stopDistAdr: 1.87, chased: true, riskPct: 0.81, expPct: 18.4, rs63: 15.6, volRatio: 2.8,
+    maDist10: 1.7, maDist50: 6.0, off52w: -3.1,
+    realizedR: 2.10, days: 7,
+    mfe: { px: 2795, date: '2026-07-23', adr: 7.57, r: 4.05 },
+    mae: { px: 2305, date: '2026-07-16', adr: -0.77, r: -0.41 },
+    exits: [
+      { date: '2026-07-20', qty: 10000, px: 2510, reason: 'scheduled_partial', day: 4,
+        exMfe: { px: 2580, date: '2026-07-20', adr: 3.91 }, exMae: { px: 2305, date: '2026-07-16', adr: -0.77 } },
+      { date: '2026-07-24', qty: 20000, px: 2640, reason: 'trail_ma10', day: 7,
+        exMfe: { px: 2795, date: '2026-07-23', adr: 7.57 }, exMae: { px: 2305, date: '2026-07-16', adr: -0.77 } }
+    ],
+    exitStack: 'aligned_up', maDist10Exit: 1.4,
+    adherence: { fit: 0.5, partialState: 'in_band', partialDelta: 1, trailDelta: 0, devCost: 0.08, nominal: 'MA10 / day3' },
+    fwd: { r20: 3.2, note: null },
+    note: 'Best trade of the month and I nearly did not take it.'
+  },
+  {
     id: 'T-2026-0806-META', book: 'US', sym: 'META', state: 'open',
     entry: '2026-08-06', entryPx: 742.10, qty: 22, stop: 715.00, stopProv: 'recorded',
     setup: 'base_breakout', stack: 'aligned_up', regime: 'uptrend',
@@ -342,8 +387,13 @@ const ATTENTION = [
 
 /* ------------------------------------------------------------------ */
 
+const WEEK = { from: '2026-08-03', to: '2026-08-07', label: 'Week of 3–7 August 2026' };
 const closed = TRADES.filter(t => t.state === 'closed');
 const open   = TRADES.filter(t => t.state === 'open');
+const lastExit = t => t.exits[t.exits.length - 1].date;
+const inWeek = t => lastExit(t) >= WEEK.from && lastExit(t) <= WEEK.to;
+const weekTrades = () => closed.filter(inWeek);
+const stragglers = () => closed.filter(t => !inWeek(t) && !t.reviewed);
 const byBook = b => closed.filter(t => t.book === b);
 const fmtR   = r => r === null || r === undefined ? '—' : (r > 0 ? '+' : '') + r.toFixed(2) + 'R';
 const cls    = n => n === null || n === undefined ? 'muted' : n > 0 ? 'pos' : n < 0 ? 'neg' : '';
@@ -378,8 +428,8 @@ function rAgg(ts) {
  * ================================================================== */
 function variantA() {
   const bookCol = (b) => {
-    const ts = byBook(b).slice().sort((x, y) =>
-      x.exits[x.exits.length - 1].date.localeCompare(y.exits[y.exits.length - 1].date));
+    const ts = weekTrades().filter(t => t.book === b).slice().sort((x, y) =>
+      lastExit(x).localeCompare(lastExit(y)));
     const a = rAgg(ts);
     const reg = REGIME[b];
     return `
@@ -606,7 +656,7 @@ function variantC() {
   return `
     <section class="work">
       <div class="tradelist">
-        ${list('Closed this week', closed)}
+        ${list('Closed', closed)}
         ${list('Open', open)}
       </div>
       <div>${t.state === 'closed' ? closedDetail(t) : openDetail(t)}</div>
@@ -671,7 +721,9 @@ function dayOf(t, date) {
     'T-2026-0803-CRWD': { '2026-08-04': 2, '2026-08-06': 4 },
     'T-2026-0721-NVDA': { '2026-07-23': 3, '2026-08-03': 9 },
     'T-2026-0728-BBCA': { '2026-07-29': 2, '2026-08-04': 5, '2026-08-05': 6, '2026-08-07': 8 },
-    'T-2026-0805-ANTM': { '2026-08-05': 1, '2026-08-07': 3 }
+    'T-2026-0805-ANTM': { '2026-08-05': 1, '2026-08-07': 3 },
+    'T-2026-0710-SMCI': { '2026-07-13': 3, '2026-07-17': 5 },
+    'T-2026-0715-MDKA': { '2026-07-16': 2, '2026-07-20': 4, '2026-07-23': 6, '2026-07-24': 7 }
   };
   return (map[t.id] || {})[date] || null;
 }
@@ -804,7 +856,105 @@ function openDetail(t) {
 
 /* ------------------------------------------------------------------ */
 
+/* ================================================================== *
+ * VARIANT D — THE LANDING (settled with the trader on #13)
+ *
+ *   C's per-Trade exit workbench, as the body of the surface
+ * + A's attention banner, across the top
+ * + a thin process strip — COUNTS, never rates, split by book
+ * + strict week, plus all open, plus an unreviewed-stragglers section
+ * + one mixed list, book as a label per row
+ * + actions write straight through
+ *
+ * The strip splits by book because a single "2 of 3 stops recorded" across a
+ * mixed list would be an aggregate across books, which the map rules out. The
+ * *list* may mix — a list is not an aggregate — but no number may.
+ * ================================================================== */
+let dSel = 'T-2026-0731-AVGO';
+
+function variantD() {
+  const t = TRADES.find(x => x.id === dSel);
+  const strag = stragglers();
+
+  /* counts, never rates — every one names its denominator */
+  const stripFor = (b) => {
+    const ts = weekTrades().filter(x => x.book === b);
+    if (!ts.length) return `<tr><td>${b}</td><td colspan="5" class="muted">no Trades closed this week</td></tr>`;
+    const gradeable = ts.filter(x => x.stopProv === 'recorded');
+    const band = ts.filter(x => x.adherence.partialState !== 'not_applicable');
+    const trail = ts.filter(x => x.adherence.trailDelta !== null);
+    const a = rAgg(ts);
+    return `<tr>
+      <td><b>${b}</b> <span class="pill mute">${REGIME[b].label.replace('_', ' ')}</span></td>
+      <td class="num">${ts.length}</td>
+      <td class="num">${gradeable.filter(x => x.chased).length} of ${gradeable.length}
+        ${ts.length - gradeable.length ? `<span class="muted">(${ts.length - gradeable.length} n/a)</span>` : ''}</td>
+      <td class="num">${band.filter(x => x.adherence.partialDelta === 0).length} of ${band.length}
+        ${ts.length - band.length ? `<span class="muted">(${ts.length - band.length} n/a)</span>` : ''}</td>
+      <td class="num">${trail.filter(x => x.adherence.trailDelta === 0).length} of ${trail.length}</td>
+      <td class="num">${ts.filter(x => x.stop !== null).length} of ${ts.length}</td>
+      <td class="num ${cls(a.sum)}">${fmtR(a.sum)}${a.excluded ? ` <span class="muted">(−${a.excluded})</span>` : ''}</td>
+    </tr>`;
+  };
+
+  const row = (x) => `
+    <button class="ti ${x.id === dSel ? 'sel' : ''}" data-did="${x.id}">
+      <span class="s">${x.sym}</span>
+      <span class="muted" style="font-size:11px"> ${x.book}</span>
+      ${x.state === 'closed'
+        ? `<span class="${cls(x.realizedR)}" style="float:right">${x.realizedR === null ? sign(x.realizedPct) + '%' : fmtR(x.realizedR)}</span>`
+        : `<span class="muted" style="float:right">${fmtR(x.live.openR)} open</span>`}
+      <span class="m">${day(x.entry)}${x.state === 'closed' ? ' → ' + day(lastExit(x)) : ' · held ' + x.live.daysHeld + 'd'}${
+        x.missingStop ? ' · <span style="color:var(--bad)">no stop</span>' : ''}</span>
+    </button>`;
+
+  const group = (label, ts, note) => ts.length ? `
+    <div class="grp">${label}${note ? ` <span style="font-weight:400;text-transform:none;letter-spacing:0">${note}</span>` : ''}</div>
+    ${ts.map(row).join('')}` : '';
+
+  return `
+    <section class="banner">
+      <h2>Needs attention</h2>
+      <ul>
+        ${ATTENTION.filter(x => x.sev !== 'mute').map(x => `<li><b>${x.title}</b> — ${x.body}</li>`).join('')}
+      </ul>
+      <p class="muted" style="font-size:11.5px;margin:8px 0 0">
+        Weekly cadence gives a 20-trading-day stop fuse roughly three looks. CRWD is on its second.
+      </p>
+    </section>
+
+    <section>
+      <h2>${WEEK.label} · the week in counts</h2>
+      <div class="card" style="padding:4px 14px 8px">
+        <table>
+          <thead><tr>
+            <th>Book</th><th class="num">Closed</th><th class="num">Chased</th>
+            <th class="num">Partial in band</th><th class="num">Trail on signal</th>
+            <th class="num">Stop recorded</th><th class="num">Net R</th>
+          </tr></thead>
+          <tbody>${stripFor('US')}${stripFor('IDX')}</tbody>
+        </table>
+        <p class="muted" style="font-size:11.5px;margin:8px 0 4px">
+          Counts, never rates — at this sample a percentage would invent precision that isn't there.
+          Split by book because no number combines the two; the list below may mix, a number may not.
+          <b>n/a</b> is absence, not deviation: a Trade stopped out before day 3 never had a partial to be late on.
+        </p>
+      </div>
+    </section>
+
+    <section class="work">
+      <div class="tradelist">
+        ${group('Closed this week', weekTrades())}
+        ${group('Unreviewed from earlier', strag, `· ${strag.length} waiting`)}
+        ${group('Open', open)}
+      </div>
+      <div>${t.state === 'closed' ? closedDetail(t) : openDetail(t)}</div>
+    </section>`;
+}
+
 const VARIANTS = {
+  D: { name: 'The landing', render: variantD,
+       blurb: "Settled on #13: C's exit workbench with A's attention banner, a thin by-book strip of counts (never rates), a strict week plus open Trades plus unreviewed stragglers, one mixed list, and actions that write straight through." },
   A: { name: "The week's tape",  render: variantA,
        blurb: 'Outcome-led and chronological. Both books side by side, closed Trades only, read-only. Attention rides as a banner on top.' },
   B: { name: 'Process scorecard', render: variantB,
@@ -816,7 +966,7 @@ const KEYS = Object.keys(VARIANTS);
 
 function current() {
   const v = new URLSearchParams(location.search).get('variant');
-  return KEYS.includes(v) ? v : 'A';
+  return KEYS.includes(v) ? v : 'D';
 }
 function go(k) {
   const u = new URL(location.href);
@@ -835,7 +985,10 @@ function draw() {
 function wire() {
   document.querySelectorAll('.bk').forEach(b => b.onclick = () => { bState.book = b.dataset.bk; draw(); });
   document.querySelectorAll('.wn').forEach(b => b.onclick = () => { bState.window = b.dataset.wn; draw(); });
-  document.querySelectorAll('.ti').forEach(b => b.onclick = () => { cSel = b.dataset.id; draw(); });
+  document.querySelectorAll('.ti').forEach(b => b.onclick = () => {
+    if (b.dataset.did) dSel = b.dataset.did; else cSel = b.dataset.id;
+    draw();
+  });
 }
 function cycle(d) {
   const i = KEYS.indexOf(current());
