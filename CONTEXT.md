@@ -40,6 +40,10 @@ _Avoid_: Initial stop, stop loss, trailing stop (the journal does not track stop
 The chart pattern a Trade was taken on: base breakout, high tight flag, or other. The only judgement the trader records that no data source can supply.
 _Avoid_: Pattern, strategy, signal
 
+**Entry Average Price**:
+The quantity-weighted mean of a Trade's own entry fills. Weighted so that price times quantity equals the cash that actually left the account — risk, exposure, and R all tie back to real money through that property. Its counterpart on the way out is the Exit Average Price.
+_Avoid_: VWAP (that means the market's intraday benchmark, not this), average fill, entry price
+
 **Exit Reason**:
 Why a particular Exit happened, drawn from a fixed vocabulary. Proposed by enrichment from the daily bars, then confirmed or overridden by the trader.
 _Avoid_: Exit type, sell reason
@@ -73,6 +77,32 @@ _Avoid_: ATR, volatility, range, ADR%
 **Excursion**:
 How far in favour of or against a Trade the price reached within a window, measured from the extremes of the daily bars rather than their closes. Distinct from the Trade's outcome, which is settled by its Exits.
 _Avoid_: MFE, MAE, drawdown, runup
+
+### Rule adherence
+
+**Ruleset Version**:
+A dated statement of the mechanical strategy, naming which Variant counts as the rule. A Trade is graded against whichever version was live on its entry date; a version is superseded, never edited.
+_Avoid_: Strategy, rules, playbook
+
+**Variant**:
+One combination of trailing moving average and partial timing that the journal can simulate. Every Trade is run against all of them, whatever the trader did.
+_Avoid_: Rule, scenario, strategy
+
+**Nominal Variant**:
+The Variant the live Ruleset Version designates as the rule. The one adherence is measured against — the others are still simulated, so drift toward another Variant stays visible.
+_Avoid_: The rule, target, baseline
+
+**Counterfactual**:
+A simulated run of one Trade under one Variant, carrying the Trade's own recorded stop. Stored as its exit legs rather than as an outcome, so any unit can be derived from it later.
+_Avoid_: Backtest, simulation, what-if
+
+**Deviation Cost**:
+What following the Nominal Variant would have changed about a Trade's outcome. A measurement, never a judgement — the journal has no record of intent and so cannot tell a considered override from a mistake.
+_Avoid_: Penalty, error, adherence score, violation
+
+**Fit**:
+How closely a Trade's actual exit dates track a Variant's simulated ones, measured in trading days. Scored on behaviour rather than outcome, because unlike rules routinely coincide on profit.
+_Avoid_: Match, accuracy, compliance
 
 ### Lifecycle
 
