@@ -1,0 +1,7 @@
+# Raw broker documents must never be committed — they carry account numbers,
+# names, tax ids and balances. Only redacted derivatives belong in docs/samples.
+# See docs/samples/export-findings.md.
+TC_*.pdf
+*_soa*.pdf
+ibkr-flex.xml
+.env
