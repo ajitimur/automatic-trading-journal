@@ -119,6 +119,7 @@
       <li>Is the <strong>confirm queue</strong> the right single door — for broker imports <em>and</em> hand-entered backdated Trades?</li>
       <li>Does treating every failure as a <strong>queue item with a defined behaviour</strong> (rather than an error) actually cover the cases?</li>
       <li>Is <strong>"correct a fact once, remember a rule forever"</strong> the right line for not re-confirming the same misparse every week?</li>
+      <li><strong>Settled:</strong> stop and setup are <em>chaseable</em>, never demanded at confirm — so a Trade can commit with risk % held open, and freezing without a stop makes that hole permanent. Does the nag land in the right place?</li>
       <li>Does splitting enrichment into <strong>entry-dated at confirm</strong> and <strong>rolling in the daily job</strong> hold up?</li>
     </ul>
   </div>
@@ -165,6 +166,7 @@
             <button data-act="OVERRIDE_FIFO">Override the FIFO allocation</button>
             <button data-act="ACK_DRIFT">Acknowledge drift</button>
             <button data-act="RECHECK">Re-check the parked items</button>
+            <button data-act="SET_STOP">Supply a stop after the fact</button>
             <button data-act="DISCARD_TOP" class="ghost">Discard the top item</button>
           </div>
         </div>
@@ -320,7 +322,7 @@ const FLOW = (() => {
         qty: group.reduce((a, r) => a + r.qty, 0),
         avgPrice: group.reduce((a, r) => a + r.qty * r.price, 0) / group.reduce((a, r) => a + r.qty, 0),
         cost: group.reduce((a, r) => a + r.cost, 0),
-        needs: existing ? [] : ["stop", "setup"],
+        optional: existing ? [] : ["stop", "setup"],
         stop: null, setup: null,
         note: others.length
           ? `${others.length} other open Trade${others.length > 1 ? "s" : ""} in ${symbol} (entered ${others.map(t => t.entryDate).join(", ")}). A different entry day is a different Trade — this does not add to it.`
@@ -382,16 +384,18 @@ const FLOW = (() => {
       say(s, `${t.symbol} committed with enrichment held — span check failed`, "l-warn");
       return;
     }
-    const risk = ((t.avgEntry - t.stop) * t.qty) / EQUITY[t.book];
+    // Stop is chaseable, so a Trade can be fully enriched *except* for the
+    // fields that need one. Exposure only needs the notional; risk needs the stop.
+    const risk = t.stop != null ? ((t.avgEntry - t.stop) * t.qty) / EQUITY[t.book] : null;
     t.enrichment = {
-      status: "entry-dated",
+      status: risk == null ? "awaiting-stop" : "entry-dated",
       asOf: t.entryDate,
-      riskPct: +(risk * 100).toFixed(2),
-      riskFlag: risk > 0.01,
+      riskPct: risk == null ? null : +(risk * 100).toFixed(2),
+      riskFlag: risk != null && risk > 0.01,
       exposurePct: +((t.notional / EQUITY[t.book]) * 100).toFixed(2),
       rolling: "waiting for the daily job",
     };
-    if (risk > 0.01) say(s, `${t.symbol} risk ${(risk * 100).toFixed(2)}% — above the 1% line`, "l-warn");
+    if (risk != null && risk > 0.01) say(s, `${t.symbol} risk ${(risk * 100).toFixed(2)}% — above the 1% line`, "l-warn");
   }
 
   // ── The reducer ──────────────────────────────────────────────────────
@@ -476,9 +480,9 @@ const FLOW = (() => {
           book: A.book, symbol: A.symbol, entryDate: d,
           rows: [{ ref: `manual-${s.seq}`, symbol: A.symbol, date: d, side: "BUY", qty: A.qty, price: A.price, cost: A.qty * A.price }],
           qty: A.qty, avgPrice: A.price, cost: 0,
-          needs: ["stop", "setup"], stop: null, setup: null,
+          optional: ["stop", "setup"], stop: null, setup: null,
           barsMissing: !BARS_AVAILABLE[A.symbol],
-          note: `Hand-entered, backdated to ${d}. It goes through confirm like any import — same fields, same checks, and stop provenance will read "reconstructed".`,
+          note: `Hand-entered, backdated to ${d}. It goes through confirm like any import. If a stop is supplied after the first exit, provenance reads "reconstructed".`,
         });
         say(s, `Backdated ${A.symbol} entry queued for ${d} — hand entry does not bypass confirm`);
         return s;
@@ -487,7 +491,7 @@ const FLOW = (() => {
       case "MANUAL_EXIT": {
         const t = s.trades.filter(x => x.openQty > 0 && x.manual)[0] || s.trades.filter(x => x.openQty > 0)[0];
         if (!t) { say(s, "No open Trade to exit.", "l-mute"); return s; }
-        const d = dateOf(s.day - A.daysAgo);
+        const d = dateOf(Math.max(s.day - A.daysAgo, dayOf(t.entryDate)));   // an exit cannot predate its entry
         s.queue.push({
           id: s.seq++, kind: "exit-allocation", manual: true,
           book: t.book, symbol: t.symbol, qty: t.openQty, price: A.price, date: d, cost: 0,
@@ -606,13 +610,14 @@ const FLOW = (() => {
         }
 
         if (i.kind === "new-trade") {
-          const stop = i.stop ?? A.stop ?? +(i.avgPrice * 0.93).toFixed(2);
+          const stop = i.stop ?? A.stop ?? null;   // chaseable — never demanded at confirm
           const t = {
             id: s.seq++, book: i.book, symbol: i.symbol, entryDate: i.entryDate,
             qty: i.qty, openQty: i.qty, avgEntry: +i.avgPrice.toFixed(4),
             notional: +(i.qty * i.avgPrice).toFixed(2), fees: i.cost,
-            stop, setup: i.setup ?? A.setup ?? "base_breakout",
-            stopProvenance: i.manual ? "reconstructed" : "recorded",
+            stop, setup: i.setup ?? A.setup ?? null,
+            // Provenance is derived from *when* the stop arrived, never entered.
+            stopProvenance: stop == null ? null : (i.manual ? "reconstructed" : "recorded"),
             manual: !!i.manual, state: "open", exits: [], enrichment: {},
           };
           i.rows.forEach(r => s.fills.push({
@@ -623,7 +628,8 @@ const FLOW = (() => {
           s.trades.push(t);
           enrichAtConfirm(s, t);
           s.queue = s.queue.filter(x => x.id !== i.id);
-          say(s, `Committed: Trade ${t.symbol} ${t.entryDate}, ${t.qty} @ ${t.avgEntry} — stop ${t.stop}, ${t.setup}`, "l-good");
+          say(s, `Committed: Trade ${t.symbol} ${t.entryDate}, ${t.qty} @ ${t.avgEntry}` +
+            (t.stop == null ? " — no stop yet, risk % is held open" : ` — stop ${t.stop}, ${t.setup}`), t.stop == null ? "l-warn" : "l-good");
           return s;
         }
 
@@ -661,7 +667,7 @@ const FLOW = (() => {
               t.lastExitDay = dayOf(i.date);
               const proceeds = t.exits.reduce((x, e) => x + e.qty * e.price, 0);
               const pnl = proceeds - t.notional - t.fees;
-              t.realizedR = t.stop < t.avgEntry
+              t.realizedR = t.stop != null && t.stop < t.avgEntry
                 ? +(pnl / ((t.avgEntry - t.stop) * t.qty)).toFixed(2) : null;
               t.pnl = +pnl.toFixed(2);
             }
@@ -721,6 +727,29 @@ const FLOW = (() => {
         return s;
       }
 
+      // ── Chase the stop afterwards ──────────────────────────────────
+      // The stop is not a gate at confirm, so it arrives later — and *when* it
+      // arrives is itself the record: before the first exit it was a live
+      // instruction; after, it is a reconstruction from memory.
+      case "SET_STOP": {
+        const t = s.trades.find(x => x.stop == null && x.state !== "frozen");
+        if (!t) { say(s, "No Trade is waiting for a stop.", "l-mute"); return s; }
+        t.stop = A.stop;
+        if (A.setup) t.setup = A.setup;
+        t.stopProvenance = t.exits.length ? "reconstructed" : "recorded";
+        t.stopSuppliedOnDay = s.day;
+        enrichAtConfirm(s, t);
+        if (t.state === "closed" || t.exits.length) {
+          const proceeds = t.exits.reduce((x, e) => x + e.qty * e.price, 0);
+          const pnl = proceeds - (t.notional * (t.qty - t.openQty) / t.qty) - t.fees;
+          t.realizedR = t.stop < t.avgEntry ? +(pnl / ((t.avgEntry - t.stop) * t.qty)).toFixed(2) : null;
+          t.pnl = +pnl.toFixed(2);
+        }
+        say(s, `${t.symbol} stop set to ${t.stop} — provenance "${t.stopProvenance}"` +
+          (t.stopProvenance === "reconstructed" ? ", because it arrived after the first exit" : ""), "l-good");
+        return s;
+      }
+
       // ── Re-check the parked items ──────────────────────────────────
       // A parked item is only parked against the journal *as it was*. Once a
       // missing Trade is entered by hand, the orphan exit should resolve itself
@@ -772,10 +801,19 @@ const FLOW = (() => {
           if (t.state === "closed" && elapsed >= FREEZE_AFTER_DAYS) {
             t.state = "frozen";
             t.frozen = { avgEntry: t.avgEntry, realizedR: t.realizedR, riskPct: t.enrichment.riskPct, at: dateOf(s.day) };
-            say(s, `${t.symbol} FROZEN — hand-entered fields locked, derived values snapshotted`, "l-good");
+            if (t.stop == null) {
+              t.stopMissingForever = true;
+              say(s, `${t.symbol} FROZEN WITHOUT A STOP — risk % and R are permanently unavailable for this Trade. Freezing locks the hole in.`, "l-bad");
+            } else {
+              say(s, `${t.symbol} FROZEN — hand-entered fields locked, derived values snapshotted`, "l-good");
+            }
           }
           touched++;
         });
+        const unstopped = s.trades.filter(t => t.stop == null && t.state !== "frozen");
+        if (unstopped.length) {
+          say(s, `${unstopped.length} Trade(s) still have no stop: ${unstopped.map(t => t.symbol).join(", ")}. Risk % and R stay unavailable until one is supplied.`, "l-warn");
+        }
         say(s, `Daily job: ${touched} Trade(s) enriched. It commits nothing.`, "l-mute");
         return s;
       }
@@ -868,7 +906,7 @@ const SCENARIOS = [
     blurb: "One US swing trade, start to frozen. Watch where enrichment splits: risk % and exposure exist the instant the Trade commits, but the rolling and post-exit fields only appear when the daily job runs. Nothing ever commits without a click.",
     steps: [
       ["Drop the NVDA entry statement", { type: "DROP", doc: DOCS.ibkrEntry }],
-      ["Confirm it — supplies stop 111.50 and setup", { type: "CONFIRM_TOP", stop: 111.50, setup: "base_breakout" }],
+      ["Confirm it — stop 111.50 supplied there and then", { type: "CONFIRM_TOP", stop: 111.50, setup: "base_breakout" }],
       ["Run the daily job (rolling fields appear)", { type: "DAILY_JOB" }],
       ["Move the clock on 1 day", { type: "ADVANCE", days: 1 }],
       ["Drop the sell statement", { type: "DROP", doc: DOCS.ibkrPartial }],
@@ -939,6 +977,25 @@ const SCENARIOS = [
     ],
   },
   {
+    name: "Stop chased later",
+    blurb: "Confirm demands nothing. The Trade commits with no stop, so exposure % exists but risk % is held open — and the daily job nags rather than the queue. Supply the stop before the first exit and provenance reads \"recorded\"; supply it after and it reads \"reconstructed\", derived from when it arrived rather than anything you type. The last steps show the cost of never supplying one: the second Trade closes unstopped, freezes, and the hole becomes permanent. For the \"reconstructed\" case, free-play 'Supply a stop after the fact' once a Trade already has an exit.",
+    steps: [
+      ["Drop the NVDA entry", { type: "DROP", doc: DOCS.ibkrEntry }],
+      ["Confirm it — no stop, no setup", { type: "CONFIRM_TOP" }],
+      ["Run the daily job — it nags, the queue does not", { type: "DAILY_JOB" }],
+      ["Supply the stop now, before any exit", { type: "SET_STOP", stop: 111.50, setup: "base_breakout" }],
+      ["Move on 4 days", { type: "ADVANCE", days: 4 }],
+      ["A second Trade, deliberately left unstopped", { type: "DROP", doc: DOCS.ibkrAddon }],
+      ["Confirm it — again no stop", { type: "CONFIRM_TOP" }],
+      ["Move on 4 days", { type: "ADVANCE", days: 4 }],
+      ["Drop the sell of 150", { type: "DROP", doc: DOCS.ibkrPartial }],
+      ["Override FIFO so the unstopped Trade closes", { type: "OVERRIDE_FIFO" }],
+      ["Confirm the exit", { type: "CONFIRM_TOP" }],
+      ["Skip past the post-exit window", { type: "ADVANCE", days: 28 }],
+      ["Run the daily job → it freezes with the hole locked in", { type: "DAILY_JOB" }],
+    ],
+  },
+  {
     name: "Hand entry, same door",
     blurb: "Backdated entry is first-class, and the claim under test is that it needs no second surface: it produces a proposal like any import, is confirmed like any import, and differs only in that stop provenance reads \"reconstructed\" because the stop was recalled after the fact.",
     steps: [
@@ -977,6 +1034,7 @@ const FREE = {
   OVERRIDE_FIFO: { type: "OVERRIDE_FIFO" },
   ACK_DRIFT: { type: "ACK_DRIFT" },
   RECHECK: { type: "RECHECK" },
+  SET_STOP: { type: "SET_STOP", stop: 111.50, setup: "base_breakout" },
   DISCARD_TOP: { type: "DISCARD_TOP" },
   MANUAL_ENTRY: { type: "MANUAL_ENTRY", book: "US", symbol: "TSLA", qty: 60, price: 305, daysAgo: 8 },
   MANUAL_EXIT: { type: "MANUAL_EXIT", price: 341, daysAgo: 2 },
@@ -1072,7 +1130,7 @@ function renderQueue() {
         <dl class="kv">
           <dt>Interpreted as</dt><dd>${i.kind === "add-fills" ? "more fills for a Trade already open" : "a new Trade"} — ${i.qty.toLocaleString()} shares @ ${i.avgPrice.toFixed(4)} avg</dd>
           <dt>Notional</dt><dd>${FLOW.money(i.book, i.qty * i.avgPrice)} <span class="lede">· broker fees ${FLOW.money(i.book, i.cost)}</span></dd>
-          ${i.needs.length ? `<dt>Needs from you</dt><dd>${i.needs.join(" and ")}</dd>` : ""}
+          ${i.optional && i.optional.length ? `<dt>Optional now</dt><dd>${i.optional.join(" and ")} <span class="lede">— confirm without them and chase later</span></dd>` : ""}
           ${i.corrected ? `<dt>Corrected</dt><dd><mark class="change">${esc(i.corrected)}</mark></dd>` : ""}
           ${i.barsMissing ? `<dt>Bars</dt><dd class="pill warn">no series for this symbol</dd>` : ""}
         </dl>
@@ -1113,13 +1171,15 @@ function renderTrades() {
       </div>
       <dl class="kv" style="margin-top:8px">
         <dt>Size</dt><dd>${t.qty.toLocaleString()} in, ${t.openQty.toLocaleString()} still open @ ${t.avgEntry}</dd>
-        <dt>Stop / setup</dt><dd>${t.stop} · ${esc(t.setup)} <span class="lede">(${esc(t.stopProvenance)})</span></dd>
+        <dt>Stop / setup</dt><dd>${t.stop == null
+            ? `<span class="pill ${t.stopMissingForever ? "bad" : "warn"}">${t.stopMissingForever ? "frozen with no stop — permanent" : "no stop yet"}</span>`
+            : `${t.stop} · ${esc(t.setup || "setup not given")} <span class="lede">(${esc(t.stopProvenance)})</span>`}</dd>
         ${t.exits.length ? `<dt>Exits</dt><dd>${t.exits.map(x => `${x.qty.toLocaleString()} @ ${x.price} on ${x.date} — ${esc(x.reason)}`).join("<br>")}</dd>` : ""}
         ${t.realizedR != null ? `<dt>Realized R</dt><dd>${t.realizedR} <span class="lede">(P&amp;L ${FLOW.money(t.book, t.pnl)} after fees)</span></dd>` : ""}
         <dt>Enrichment</dt><dd>
           ${e.status === "needs-repair"
             ? `<span class="pill warn">held for repair</span> <span class="lede">${esc(e.why)}</span>`
-            : `risk ${e.riskPct}%${e.riskFlag ? ' <span class="pill bad">over 1%</span>' : ""} · exposure ${e.exposurePct}% <span class="lede">as of ${esc(e.asOf || "—")}</span>
+            : `${e.riskPct == null ? '<span class="pill warn">risk % awaiting a stop</span>' : `risk ${e.riskPct}%`}${e.riskFlag ? ' <span class="pill bad">over 1%</span>' : ""} · exposure ${e.exposurePct}% <span class="lede">as of ${esc(e.asOf || "—")}</span>
                <br><span class="lede">rolling: ${esc(e.rolling || "—")}${e.postExit ? ` · post-exit: ${esc(e.postExit)}` : ""}</span>`}
         </dd>
         ${t.frozen ? `<dt>Snapshot</dt><dd>avg entry ${t.frozen.avgEntry}, R ${t.frozen.realizedR}, risk ${t.frozen.riskPct}% <span class="lede">frozen ${t.frozen.at}</span>${t.driftAcknowledged ? ' <span class="pill good">drift acknowledged</span>' : ""}</dd>` : ""}
