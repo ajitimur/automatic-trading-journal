@@ -31,8 +31,15 @@ Token counts are `chars / 4` — comparative only, not a budget.
 | --- | --- | --- |
 | A wide CSV | 1,090 | ~73,000 |
 | B full JSONL | 2,255 | ~151,000 |
-| C curated JSONL | 954 | ~64,000 |
-| D Markdown dossier | 1,696 | ~79,000 |
+| C curated JSONL | 1,142 | ~77,000 |
+| D Markdown dossier | 1,933 | ~79,000 |
+
+> **Note.** C was ~64,000 when first measured, before the decisions in
+> [Locked](#locked) added price levels, `capture_ratio`, `deviation_cost_r` and five
+> within-export percentiles. Those cost ~20%, and they push C slightly *above* the
+> wide CSV. C is no longer the cheapest shape — it is the most useful per token, which
+> is the thing actually being optimized. The percentiles alone are ~8,000 tokens a
+> year and are the first thing to cut if the budget ever binds.
 
 **CSV's cost advantage does not survive contact with the real record.** The intuition
 that positional columns beat repeated keys assumes a flat record. This one is not flat:
@@ -64,13 +71,30 @@ it will sometimes get wrong.
 worst to slice: rows cannot be filtered, and the per-trade variant table is the bulk of
 its extra cost.
 
-## Open for the human
+## Locked
 
-1. Is C's field selection right — anything cut that should ship, anything shipped that
-   is noise? Specifically: does the six-variant table need to be in the export at all,
-   or is `best_fit_variant` + `best_variant_r` enough?
-2. Is the free-text note in the right place (a `note` key on the row) or should it be
-   segregated so the numeric rows stay uniform?
-3. Scope: whole history, date range, or one book per export? C carries `book` on every
-   row, so a mixed export is legal — but is that ever wanted, given nothing aggregates?
-4. Should the aggregates block ship, given the model can derive it from the rows?
+`out/c-curated.jsonl` is the settled shape. Decided in
+[#11](https://github.com/ajitimur/automatic-trading-journal/issues/11):
+
+- **JSONL, one object per Trade per line**, normalized to R and ADR, legend header
+  always present.
+- **`entry_avg_price` and `stop` are the only price levels.** Enough to answer a price
+  question and to let the model check its own R arithmetic; not enough to invite
+  cross-book currency maths.
+- **`capture_ratio`** = `realized_r / mfe_r`, **null unless the Trade both went in
+  favour and finished in profit**. NVDA is why: 0.30R available, 1.09R lost, which
+  computes to −3.63 and reads as a catastrophic *exit*. The exit was correct and
+  immediate; the entry was the mistake. A ratio that indicts the wrong decision is
+  worse than no ratio.
+- **`deviation_cost_r`** — #8's deviation cost, normalized out of price into R.
+- **The six-variant table does not ship.** `best_fit_variant`, `best_variant_r`,
+  `partial_state`, `trail_exit_delta_days`, `deviation_cost_r` carry it.
+- **Five within-export percentiles**, rendered immediately after the field each ranks.
+  The legend states they are ranks *within this export* — slice differently and the
+  same Trade ranks differently.
+- **The note stays on the row.** Segregating it would break the one-object-per-Trade
+  property that makes the export filterable.
+- **One book per export by default**; `book` stays on every row so a deliberate
+  normalized cross-book export is still legal.
+- **Aggregates ship, with `n` on every figure**, plus a legend caveat to treat n < 20
+  as anecdote.

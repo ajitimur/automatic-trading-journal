@@ -34,6 +34,11 @@ daily percent range), so a $400 US name and an IDR 7,200 IDX name are comparable
 `_r` fields are multiples of the risk taken (entry to stop). `_pct` fields are
 percent. Prices are in the book's own currency and never converted.
 
+Percentiles. `_pctile` fields rank a trade against THE OTHER TRADES IN THIS EXPORT,
+not against any absolute scale and not against the full history. Slice the export
+differently and the same trade gets a different percentile. Use them to say "this
+entry was extended for this trader", never "this entry was extended".
+
 Anchors. Entry-dated geometry is as of the PRIOR trading day's close — the last bar
 that existed when the trade was decided. Exit geometry is as of the exit day's own
 close, because the exit rule is triggered by a close. This asymmetry is deliberate.
@@ -51,6 +56,12 @@ Caveats you must respect.
   book, or compare normalized (`_adr`, `_r`) values across books.
 - There is no recorded plan. `setup` and `stop` are the only judgements the trader
   entered; everything else is measured after the fact. Do not infer intent.
+- This journal records only trades that were TAKEN. There is no record of setups
+  passed on. Every conclusion about setup selection is therefore conditional on the
+  trader's own filter — you can say which of the taken setups worked, never which
+  setups work. Do not present the former as the latter.
+- Sample sizes are given as `n` in the baseline block. Do not report a finding on a
+  subgroup without stating its `n`, and treat anything under ~20 as anecdote.
 
 Adherence. Every trade is scored against all six mechanical variants
 (trail {MA10, MA20} x partial {none, day 3, day 5}); `best_fit_variant` is the one
@@ -60,10 +71,13 @@ the trade's behaviour most resembled, derived — not something the trader decla
 
 AGGREGATES = """\
 # Baseline context (computed over this export, so you need not re-derive it)
+# Every figure carries its n. Treat n < 20 as anecdote.
 
-US book: 2 trades, 1 win, avg R +0.71, avg hold 10.5 trading days.
-IDX book: 1 trade, 1 win, avg R +1.69, avg hold 14 trading days.
-R aggregates exclude 1 trade with a reconstructed stop (of 3 total).
+Scope: both books, 2026-04-20 to 2026-07-24. n=3.
+US book: n=2, 1 win, avg R +0.71, avg hold 10.5 trading days.
+IDX book: n=1, 1 win, avg R +1.69, avg hold 14 trading days.
+R aggregates exclude n=1 trade with a reconstructed stop (of n=3 total).
+By setup: base_breakout n=1, high_tight_flag n=1, other n=1.
 Ruleset in force throughout: v1 (partial 1/3 on days 3-5, then trail MA10).
 """
 
@@ -137,6 +151,55 @@ def render_b():
 
 CURATED_NOTE = "# One JSON object per trade. See legend above for units.\n"
 
+# Ranked within the export, never against an absolute scale. Five fields only —
+# the ones where "is this high for me?" is the actual question being asked.
+PCTILE_FIELDS = (
+    "stop_distance_adr",
+    "entry_ma_dist_10_adr",
+    "entry_move_63d_pct",
+    "exposure_pct_of_equity",
+    "days_held",
+)
+
+
+def percentiles(records):
+    """Within-export rank, 0-100. Nulls do not rank and stay null."""
+    for field in PCTILE_FIELDS:
+        vals = sorted(r[field] for r in records if r.get(field) is not None)
+        for r in records:
+            v = r.get(field)
+            if v is None or len(vals) < 2:
+                r[f"{field}_pctile"] = None
+            else:
+                below = sum(1 for x in vals if x < v)
+                r[f"{field}_pctile"] = round(below / (len(vals) - 1) * 100)
+    return records
+
+
+def capture_ratio(t):
+    """What share of the available move the Trade actually took.
+
+    Defined only for a Trade that both went in favour AND finished in profit.
+    Null otherwise — and the null is the point. NVDA had 0.30R available and
+    lost 1.09R, which computes to -3.63 and reads as a catastrophic *exit*.
+    It was not: the exit was correct and immediate. The trade was a bad entry.
+    A ratio that indicts the wrong decision is worse than no ratio.
+    """
+    mfe = r_units(t, t["mfe_high"])
+    if mfe is None or mfe <= 0:
+        return None
+    if t["realized_r"] is None or t["realized_r"] <= 0:
+        return None
+    return round(t["realized_r"] / mfe, 2)
+
+
+def deviation_cost_r(t):
+    """#8's deviation cost, normalized out of price into R."""
+    dc = t.get("deviation_cost_price")
+    if dc is None or t["stop"] is None:
+        return None
+    return round(dc / (t["entry_avg_price"] - t["stop"]), 2)
+
 
 def render_c(trade):
     t = trade
@@ -149,6 +212,11 @@ def render_c(trade):
         "days_held": t["days_held"],
         "setup": t["setup"],
         "stop_provenance": t["stop_provenance"],
+        # price levels — the only two. Enough to answer a price question and to
+        # let the model check its own R arithmetic; not enough to tempt it into
+        # cross-book currency maths.
+        "entry_avg_price": t["entry_avg_price"],
+        "stop": t["stop"],
         # outcome
         "realized_r": t["realized_r"],
         "realized_pct": t["realized_pct"],
@@ -177,6 +245,7 @@ def render_c(trade):
         "mfe_day": t["mfe_date"],
         "mae_r": r_units(t, t["mae_low"]),
         "mae_day": t["mae_date"],
+        "capture_ratio": capture_ratio(t),
         # counterfactual
         "fwd_20d_pct": t["fwd_return_20d"],
         "fwd_high_r": r_units(t, t["fwd_high"]),
@@ -185,6 +254,7 @@ def render_c(trade):
         "best_fit_variant": t["best_fit_variant"],
         "partial_state": t["partial_state"],
         "trail_exit_delta_days": t["trail_exit_delta"],
+        "deviation_cost_r": deviation_cost_r(t),
         "best_variant_r": max(
             (v["r"] for v in t["variants"] if v["r"] is not None), default=None
         ),
@@ -200,8 +270,21 @@ def render_c(trade):
 
 
 def render_c_all():
+    records = percentiles([render_c(t) for t in TRADES])
+    # Put each _pctile immediately after the field it ranks, so the model reads
+    # the value and its position together rather than hunting.
+    ordered = []
+    for r in records:
+        o = {}
+        for k, v in r.items():
+            if k.endswith("_pctile"):
+                continue
+            o[k] = v
+            if k in PCTILE_FIELDS:
+                o[f"{k}_pctile"] = r[f"{k}_pctile"]
+        ordered.append(o)
     return CURATED_NOTE + "\n".join(
-        json.dumps(render_c(t), ensure_ascii=False) for t in TRADES
+        json.dumps(o, ensure_ascii=False) for o in ordered
     ) + "\n"
 
 
