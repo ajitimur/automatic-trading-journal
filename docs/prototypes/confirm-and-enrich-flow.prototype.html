@@ -119,6 +119,7 @@
       <li>Is the <strong>confirm queue</strong> the right single door — for broker imports <em>and</em> hand-entered backdated Trades?</li>
       <li>Does treating every failure as a <strong>queue item with a defined behaviour</strong> (rather than an error) actually cover the cases?</li>
       <li>Is <strong>"correct a fact once, remember a rule forever"</strong> the right line for not re-confirming the same misparse every week?</li>
+      <li><strong>Settled:</strong> bulk confirm covers <em>exit reasons only</em>; drift overwrites a frozen snapshot <em>only when a broker restated a fact</em>, never when bar data moved.</li>
       <li><strong>Settled:</strong> stop and setup are <em>chaseable</em>, never demanded at confirm — so a Trade can commit with risk % held open, and freezing without a stop makes that hole permanent. Does the nag land in the right place?</li>
       <li>Does splitting enrichment into <strong>entry-dated at confirm</strong> and <strong>rolling in the daily job</strong> hold up?</li>
     </ul>
@@ -164,7 +165,10 @@
             <button data-act="CORRECT_QTY">Correct a quantity (this fill only)</button>
             <button data-act="REMEMBER_SYMBOL">Fix the symbol &amp; remember the rule</button>
             <button data-act="OVERRIDE_FIFO">Override the FIFO allocation</button>
+            <button data-act="CONFIRM_ALL_EXITS" class="primary">Confirm all exits at proposed reasons</button>
             <button data-act="ACK_DRIFT">Acknowledge drift</button>
+            <button data-act="APPLY_DRIFT">Apply drift to the snapshot</button>
+            <button data-act="REVISE_BARS">Simulate a revised bar series</button>
             <button data-act="RECHECK">Re-check the parked items</button>
             <button data-act="SET_STOP">Supply a stop after the fact</button>
             <button data-act="DISCARD_TOP" class="ghost">Discard the top item</button>
@@ -286,8 +290,12 @@ const FLOW = (() => {
 
     // Stockbit's daily self-check: recompute the printed total from the parsed rows.
     if (doc.feeCheck) {
-      const gross = rows.filter(r => r.side === "BUY").reduce((a, r) => a + r.qty * r.price, 0);
-      const computed = gross + gross * 0.0015 + 10000;   // 0.15% all-in + flat Rp10,000 stamp duty
+      const side = doc.feeCheck.side || "BUY";
+      const gross = rows.filter(r => r.side === side).reduce((a, r) => a + r.qty * r.price, 0);
+      // buy:  gross + 0.15% + Rp10,000 stamp duty      sell: gross − 0.15% − 0.10% income tax
+      const computed = side === "SELL"
+        ? gross - gross * 0.0015 - gross * 0.001
+        : gross + gross * 0.0015 + 10000;
       if (Math.abs(computed - doc.feeCheck.printedTotal) > 1) {
         return {
           ok: false,
@@ -580,13 +588,62 @@ const FLOW = (() => {
         return s;
       }
 
+      // The snapshot is overwritten only when the *fact* underneath it was wrong.
+      // Bar data moving is not that: the snapshot was right at the time, and
+      // rewriting it would destroy the record of what was believed at freeze.
+      case "APPLY_DRIFT": {
+        const i = s.queue.find(x => x.kind === "drift");
+        if (!i) { say(s, "No drift to apply.", "l-mute"); return s; }
+        if (i.cause !== "restatement") {
+          say(s, `Refused — this drift came from ${i.cause.replace("-", " ")}, not a restated fact. The snapshot was correct when it was taken; acknowledge it instead.`, "l-bad");
+          return s;
+        }
+        const t = s.trades.find(x => x.id === i.tradeId);
+        const live = s.fills.filter(f => f.tradeId === t.id && f.side === "BUY" && !f.superseded);
+        const qty = live.reduce((a, f) => a + f.qty, 0);
+        t.qty = qty;
+        t.avgEntry = +(live.reduce((a, f) => a + f.qty * f.price, 0) / qty).toFixed(4);
+        t.notional = +(qty * t.avgEntry).toFixed(2);
+        const proceeds = t.exits.reduce((x, e) => x + e.qty * e.price, 0);
+        const pnl = proceeds - t.notional - t.fees;
+        t.realizedR = t.stop != null && t.stop < t.avgEntry
+          ? +(pnl / ((t.avgEntry - t.stop) * t.qty)).toFixed(2) : null;
+        t.pnl = +pnl.toFixed(2);
+        const risk = t.stop != null ? ((t.avgEntry - t.stop) * t.qty) / EQUITY[t.book] : null;
+        t.frozen = {
+          ...t.frozen,
+          superseded: { avgEntry: t.frozen.avgEntry, realizedR: t.frozen.realizedR, riskPct: t.frozen.riskPct, frozenAt: t.frozen.at },
+          avgEntry: t.avgEntry, realizedR: t.realizedR,
+          riskPct: risk == null ? null : +(risk * 100).toFixed(2),
+          correctedOn: dateOf(s.day), correctedBecause: "the broker restated a fill",
+        };
+        s.queue = s.queue.filter(x => x.id !== i.id);
+        say(s, `${t.symbol} snapshot corrected to ${t.avgEntry} — the superseded values are kept beside it, not discarded.`, "l-good");
+        return s;
+      }
+
+      // A bar series can be revised long after the fact — a split back-applied,
+      // a close corrected. This is the drift that must never overwrite.
+      case "REVISE_BARS": {
+        const t = s.trades.find(x => x.state === "frozen");
+        if (!t) { say(s, "No frozen Trade for a bar revision to touch.", "l-mute"); return s; }
+        s.queue.push({
+          id: s.seq++, kind: "drift", attn: true, tradeId: t.id, book: t.book, symbol: t.symbol,
+          cause: "bar-data",
+          why: `The bar series for ${t.symbol} was revised after this Trade froze. The MA-derived exit reason and the post-exit window recompute differently from the snapshot.`,
+          remedy: "Acknowledge only. Nothing about the Trade was wrong when it froze — the source moved underneath it, and the snapshot is the record of what was believed then.",
+        });
+        say(s, `Bar series for ${t.symbol} revised — drift raised against a frozen Trade`, "l-warn");
+        return s;
+      }
+
       case "ACK_DRIFT": {
         const i = s.queue.find(x => x.kind === "drift");
         if (!i) { say(s, "No drift to acknowledge.", "l-mute"); return s; }
         const t = s.trades.find(x => x.id === i.tradeId);
         t.driftAcknowledged = true;
         s.queue = s.queue.filter(x => x.id !== i.id);
-        say(s, `Drift on ${t.symbol} acknowledged. The frozen snapshot stands — it is what was true at freeze.`, "l-good");
+        say(s, `Drift on ${t.symbol} (${i.cause}) acknowledged. The frozen snapshot stands — it is what was true at freeze.`, "l-good");
         return s;
       }
 
@@ -599,11 +656,13 @@ const FLOW = (() => {
       }
 
       // ── Confirm: the only thing that commits ───────────────────────
+      case "CONFIRM_ITEM":
       case "CONFIRM_TOP": {
         if (!s.queue.length) { say(s, "Queue is empty.", "l-mute"); return s; }
         // A blocked item is parked, not a roadblock: it must never stall the
         // items behind it, or one orphan exit halts the week's whole import.
-        const i = s.queue.find(x => !x.blocked);
+        const i = A.id != null ? s.queue.find(x => x.id === A.id) : s.queue.find(x => !x.blocked);
+        if (A.id != null && !i) return s;
         if (!i) {
           say(s, `Nothing confirmable — ${s.queue.length} item(s) parked: ${s.queue.map(x => `${x.kind} (${x.symbol || x.filename})`).join("; ")}`, "l-bad");
           return s;
@@ -629,7 +688,7 @@ const FLOW = (() => {
           enrichAtConfirm(s, t);
           s.queue = s.queue.filter(x => x.id !== i.id);
           say(s, `Committed: Trade ${t.symbol} ${t.entryDate}, ${t.qty} @ ${t.avgEntry}` +
-            (t.stop == null ? " — no stop yet, risk % is held open" : ` — stop ${t.stop}, ${t.setup}`), t.stop == null ? "l-warn" : "l-good");
+            (t.stop == null ? " — no stop yet, risk % is held open" : ` — stop ${t.stop}${t.setup ? `, ${t.setup}` : ", setup not given"}`), t.stop == null ? "l-warn" : "l-good");
           return s;
         }
 
@@ -695,8 +754,9 @@ const FLOW = (() => {
             if (t.state === "frozen") {
               s.queue.push({
                 id: s.seq++, kind: "drift", attn: true, tradeId: t.id, book: t.book, symbol: t.symbol,
-                why: `${t.symbol} froze with avg entry ${t.frozen.avgEntry}, but the restated fill re-derives it to ${i.after.price}. The snapshot and today's derivation disagree.`,
-                remedy: "Acknowledge it. A frozen Trade is not silently rewritten — the snapshot is the record of what was believed then.",
+                cause: "restatement",
+                why: `${t.symbol} froze with avg entry ${t.frozen.avgEntry}, but the broker restated a fill and it now re-derives differently. The snapshot was built on a fact that was wrong.`,
+                remedy: "A restated fill means the underlying fact changed, so this one may be applied — the snapshot is corrected and the superseded values are kept beside it.",
               });
               say(s, `Restatement landed on a FROZEN Trade — raised as drift, snapshot untouched`, "l-warn");
             } else {
@@ -748,6 +808,21 @@ const FLOW = (() => {
         say(s, `${t.symbol} stop set to ${t.stop} — provenance "${t.stopProvenance}"` +
           (t.stopProvenance === "reconstructed" ? ", because it arrived after the first exit" : ""), "l-good");
         return s;
+      }
+
+      // ── Bulk confirm, exit reasons only ────────────────────────────
+      // A week of statements is mostly agreeing with proposed exit reasons.
+      // New Trades stay one at a time: a mis-parsed quantity there poisons
+      // everything downstream, and that is exactly what confirm exists to catch.
+      case "CONFIRM_ALL_EXITS": {
+        const exits = s.queue.filter(x => x.kind === "exit-allocation" && !x.blocked);
+        if (!exits.length) { say(s, "No exits waiting.", "l-mute"); return s; }
+        const tally = {};
+        exits.forEach(e => { tally[e.reason || e.proposedReason] = (tally[e.reason || e.proposedReason] || 0) + 1; });
+        let out = s;
+        exits.forEach(e => { out = reduce(out, { type: "CONFIRM_ITEM", id: e.id }); });
+        say(out, `Bulk-confirmed ${exits.length} exit(s) at their proposed reasons — ${Object.entries(tally).map(([k, v]) => `${v}× ${k}`).join(", ")}. New Trades were left alone.`, "l-good");
+        return out;
       }
 
       // ── Re-check the parked items ──────────────────────────────────
@@ -880,6 +955,12 @@ const DOCS = {
     filename: "0891234567_tc110826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug11",
     rows: [], feeCheck: null,
   },
+  stockbitSell: {
+    key: "stockbitSell", label: "Stockbit · FUTR sell TC",
+    filename: "SUB1234_tc180826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug18",
+    rows: [{ ref: "0501144#1", symbol: "FUTR", date: "2026-08-18", side: "SELL", qty: 99200, price: 402, cost: 0 }],
+    feeCheck: { side: "SELL", printedTotal: 39778704 },  // gross 39,878,400 − 0.15% − 0.10% tax
+  },
   stockbitDrifted: {
     key: "stockbitDrifted", label: "Stockbit · columns shifted (Lot read as Quantity)",
     filename: "SUB1234_tc120826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug12",
@@ -933,7 +1014,7 @@ const SCENARIOS = [
   },
   {
     name: "Re-drop & restatement",
-    blurb: "Three kinds of \"we have seen this before\". The identical document redelivered under another filename is a silent no-op. A document whose fills we already hold is idempotent. But a fill the broker has restated is a revision — and if the Trade already froze, it becomes drift rather than a rewrite.",
+    blurb: "Three kinds of \"we have seen this before\", then the two kinds of drift. A redelivered document is a silent no-op; fills already held are idempotent; a restated fill is a revision. Drift on a frozen Trade splits by cause: a restated fill means the fact underneath was wrong, so the snapshot is corrected and the old values kept beside it — but a revised bar series is refused, because nothing was wrong at freeze and the snapshot is the record of what was believed then.",
     steps: [
       ["Drop the NVDA entry", { type: "DROP", doc: DOCS.ibkrEntry }],
       ["Confirm it", { type: "CONFIRM_TOP", stop: 111.50 }],
@@ -945,7 +1026,10 @@ const SCENARIOS = [
       ["Run the daily job", { type: "DAILY_JOB" }],
       ["Now IBKR restates fill 2", { type: "DROP", doc: DOCS.ibkrRestated }],
       ["Accept the revision → raises drift", { type: "CONFIRM_TOP" }],
-      ["Acknowledge the drift", { type: "ACK_DRIFT" }],
+      ["Apply it — a restated fact corrects the snapshot", { type: "APPLY_DRIFT" }],
+      ["Now the bar series gets revised too", { type: "REVISE_BARS" }],
+      ["Try to apply that one — it refuses", { type: "APPLY_DRIFT" }],
+      ["Acknowledge it instead", { type: "ACK_DRIFT" }],
     ],
   },
   {
@@ -974,6 +1058,24 @@ const SCENARIOS = [
       ["Confirm it — note the parked exit did not block this", { type: "CONFIRM_TOP", stop: 228 }],
       ["Re-check the parked items", { type: "RECHECK" }],
       ["Confirm the exit that was orphaned", { type: "CONFIRM_TOP" }],
+    ],
+  },
+  {
+    name: "A week at once",
+    blurb: "The real weekly shape: several days of statements land together. New Trades are still confirmed one at a time — a mis-parsed quantity there poisons everything downstream. The exits are the repetitive part, and they go in one click at the reasons enrichment proposed. Watch the parked orphan stay untouched by the bulk action.",
+    steps: [
+      ["Drop Monday: the NVDA entry", { type: "DROP", doc: DOCS.ibkrEntry }],
+      ["Confirm it — one at a time, as always", { type: "CONFIRM_TOP", stop: 111.50, setup: "base_breakout" }],
+      ["Move on 4 days", { type: "ADVANCE", days: 4 }],
+      ["Drop the add-on", { type: "DROP", doc: DOCS.ibkrAddon }],
+      ["Confirm that too", { type: "CONFIRM_TOP", stop: 124.00 }],
+      ["Drop the Stockbit entry day", { type: "DROP", doc: DOCS.stockbit }],
+      ["Confirm the FUTR Trade", { type: "CONFIRM_TOP", stop: 320, setup: "high_tight_flag" }],
+      ["Now the week's exits land together — NVDA", { type: "DROP", doc: DOCS.ibkrPartial }],
+      ["...FUTR", { type: "DROP", doc: DOCS.stockbitSell }],
+      ["...and an orphan nobody journalled", { type: "DROP", doc: DOCS.ibkrOrphan }],
+      ["Confirm all exits at their proposed reasons", { type: "CONFIRM_ALL_EXITS" }],
+      ["Only the parked orphan is left", { type: "CONFIRM_TOP" }],
     ],
   },
   {
@@ -1033,6 +1135,9 @@ const FREE = {
   REMEMBER_SYMBOL: { type: "REMEMBER_SYMBOL", from: "ZZZQ", to: "FUTR" },
   OVERRIDE_FIFO: { type: "OVERRIDE_FIFO" },
   ACK_DRIFT: { type: "ACK_DRIFT" },
+  APPLY_DRIFT: { type: "APPLY_DRIFT" },
+  REVISE_BARS: { type: "REVISE_BARS" },
+  CONFIRM_ALL_EXITS: { type: "CONFIRM_ALL_EXITS" },
   RECHECK: { type: "RECHECK" },
   SET_STOP: { type: "SET_STOP", stop: 111.50, setup: "base_breakout" },
   DISCARD_TOP: { type: "DISCARD_TOP" },
@@ -1151,6 +1256,7 @@ function renderQueue() {
     } else {
       body = `
         <h3 style="margin-top:10px">${esc(i.symbol || i.filename || "")}</h3>
+        ${i.cause ? `<p style="margin-bottom:6px"><span class="pill ${i.cause === "restatement" ? "good" : "warn"}">${i.cause === "restatement" ? "a restated fact — may be applied" : "bar data moved — acknowledge only"}</span></p>` : ""}
         <p style="font-size:13px;margin-bottom:6px">${esc(i.why)}</p>
         ${i.before ? `<dl class="kv"><dt>Was</dt><dd>${i.before.qty} @ ${i.before.price}</dd><dt>Now</dt><dd><mark class="change">${i.after.qty} @ ${i.after.price}</mark></dd></dl>` : ""}
         <p class="hint">${esc(i.remedy || "")}</p>`;
@@ -1182,7 +1288,8 @@ function renderTrades() {
             : `${e.riskPct == null ? '<span class="pill warn">risk % awaiting a stop</span>' : `risk ${e.riskPct}%`}${e.riskFlag ? ' <span class="pill bad">over 1%</span>' : ""} · exposure ${e.exposurePct}% <span class="lede">as of ${esc(e.asOf || "—")}</span>
                <br><span class="lede">rolling: ${esc(e.rolling || "—")}${e.postExit ? ` · post-exit: ${esc(e.postExit)}` : ""}</span>`}
         </dd>
-        ${t.frozen ? `<dt>Snapshot</dt><dd>avg entry ${t.frozen.avgEntry}, R ${t.frozen.realizedR}, risk ${t.frozen.riskPct}% <span class="lede">frozen ${t.frozen.at}</span>${t.driftAcknowledged ? ' <span class="pill good">drift acknowledged</span>' : ""}</dd>` : ""}
+        ${t.frozen ? `<dt>Snapshot</dt><dd>avg entry ${t.frozen.avgEntry}, R ${t.frozen.realizedR ?? "—"}, risk ${t.frozen.riskPct ?? "—"}% <span class="lede">frozen ${t.frozen.at}</span>${t.driftAcknowledged ? ' <span class="pill good">drift acknowledged</span>' : ""}
+          ${t.frozen.superseded ? `<br><span class="lede">↳ superseded: avg entry ${t.frozen.superseded.avgEntry}, R ${t.frozen.superseded.realizedR ?? "—"} — corrected ${t.frozen.correctedOn} because ${esc(t.frozen.correctedBecause)}</span>` : ""}</dd>` : ""}
       </dl>
     </div>`;
   }).join("");
