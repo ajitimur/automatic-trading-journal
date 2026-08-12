@@ -352,6 +352,13 @@ const px     = (t, v) => t.book === 'IDX' ? v.toLocaleString('en-US') : v.toFixe
 const day    = d => d.slice(5).replace('-', '/');
 const REASON = { scheduled_partial: 'scheduled partial', trail_ma10: 'trail MA10', stop_hit: 'stop hit', discretionary: 'discretionary' };
 
+function median(xs) {
+  if (!xs.length) return '—';
+  const s = xs.slice().sort((a, b) => a - b), m = s.length >> 1;
+  const v = s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  return (v > 0 ? '+' : '') + v;
+}
+
 /* R aggregates must declare what they excluded (#8, three-tier stop rule) */
 function rAgg(ts) {
   const usable = ts.filter(t => t.realizedR !== null && t.realizedR !== undefined);
@@ -532,7 +539,7 @@ function variantB() {
                     `${pool.length - bandApplicable} not applicable (never reached day 3)`,
                     bandApplicable ? 100 * inBand / bandApplicable : 0, 'good')}
             ${meter('Trail on signal', trailApplicable ? `${trailOnTime}/${trailApplicable}` : '—',
-                    `vs nominal MA10 · median delta ${pool.map(t=>t.adherence.trailDelta).filter(x=>x!==null).sort((a,c)=>a-c)[0] ?? '—'}d`,
+                    `vs nominal MA10 · median delta ${median(pool.map(t=>t.adherence.trailDelta).filter(x=>x!==null))}d`,
                     trailApplicable ? 100 * trailOnTime / trailApplicable : 0, '')}
             ${meter('Stop recorded', `${withStop}/${pool.length}`,
                     `${pool.filter(t=>t.stopProv==='reconstructed').length} reconstructed · ${pool.filter(t=>t.stop===null).length} absent`,
@@ -614,12 +621,18 @@ function tradeDays(t) {
 function timeline(t) {
   const n = tradeDays(t) + 2;
   const marks = {};
+  const coincide = [];
   marks[1] = { c: 'entry', m: 'E' };
   if (t.state === 'closed') {
     t.exits.forEach((e, i) => { marks[e.day] = { c: 'exit', m: 'X' + (t.exits.length > 1 ? (i + 1) : '') }; });
-    /* the nominal variant's simulated legs, from #8 — shown against the actual */
-    const sim = simLegs(t);
-    sim.forEach(s => { if (!marks[s.day]) marks[s.day] = { c: 'sim', m: s.m }; });
+    /* the nominal variant's simulated legs, from #8 — shown against the actual.
+       Where a sim leg lands on the same day as a real one the marker would be
+       invisible, so the coincidence is stated in words instead — it is the
+       most interesting case (you did exactly what the rule said). */
+    simLegs(t).forEach(s => {
+      if (marks[s.day] && marks[s.day].c === 'exit') coincide.push(`d${s.day}`);
+      else if (!marks[s.day]) marks[s.day] = { c: 'sim', m: s.m };
+    });
   }
   const mfeDay = t.mfe ? dayOf(t, t.mfe.date) : null;
   const maeDay = t.mae ? dayOf(t, t.mae.date) : null;
@@ -645,7 +658,10 @@ function timeline(t) {
       <span><i style="background:var(--warn)"></i>nominal variant would have</span>
       <span><i style="background:var(--good)"></i>high (MFE)</span>
       <span><i style="background:var(--bad)"></i>low (MAE)</span>
-    </div>`;
+    </div>
+    ${coincide.length ? `<p class="muted" style="font-size:11.5px;margin:6px 0 0">
+      The nominal variant exited on the same day you did at ${coincide.join(' and ')} — its marker sits underneath yours.
+    </p>` : ''}`;
 }
 
 function dayOf(t, date) {
