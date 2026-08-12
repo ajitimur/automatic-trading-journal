@@ -76,7 +76,15 @@ _Avoid_: ATR, volatility, range, ADR%
 
 **Excursion**:
 How far in favour of or against a Trade the price reached within a window, measured from the extremes of the daily bars rather than their closes. Distinct from the Trade's outcome, which is settled by its Exits.
-_Avoid_: MFE, MAE, drawdown, runup
+_Avoid_: MFE, MAE, drawdown (that is the Book's, not a Trade's — see Book Drawdown), runup
+
+**Book History**:
+What a Book's own record says about the moment a Trade was entered: what preceded it, how many Trades were live beside it, how deep the Book Drawdown was. Computed from the current Trade set whenever it is read, never stored on the Trade and never snapshotted — its inputs are the journal's own records, so there is no outside restatement to defend against.
+_Avoid_: Sequence fields, context fields, state at entry
+
+**Book Drawdown**:
+How far a Book's cumulative Realized R sits below its own high-water mark. A property of a Book on a date, which a Trade reads rather than owns. Measured in R off closed Trades, so deposits and withdrawals cannot move it and Trades with no recorded stop do not contribute; it has no meaning until the Book has enough closed Trades to have established a high-water mark. Never combined across Books — two separately funded pots have separate marks.
+_Avoid_: Drawdown (unqualified — Excursion is the Trade-level one), equity drawdown, peak-to-trough
 
 ### Rule adherence
 
