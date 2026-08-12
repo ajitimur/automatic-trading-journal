@@ -60,6 +60,20 @@ _Avoid_: Size, allocation
 A Trade's outcome expressed in multiples of the risk it took. Derived.
 _Avoid_: R multiple, RR, reward ratio
 
+**Chasing**:
+Entering so far above the Trade's stop that the gap between the two exceeds a typical day's range — the symbol must travel more than an average day against the Trade merely to stop it out. Derived, and not meaningful where the stop's provenance is reconstructed rather than recorded.
+_Avoid_: Extension, late entry, overextended
+
+### Enrichment
+
+**Average Daily Range**:
+The share of its own price a symbol typically travels in a day, averaged over a recent window. The journal's unit of comparison: chart distances and excursions are expressed as multiples of it, so trades in either book at any price level can be read side by side.
+_Avoid_: ATR, volatility, range, ADR%
+
+**Excursion**:
+How far in favour of or against a Trade the price reached within a window, measured from the extremes of the daily bars rather than their closes. Distinct from the Trade's outcome, which is settled by its Exits.
+_Avoid_: MFE, MAE, drawdown, runup
+
 ### Lifecycle
 
 **Confirm-and-Enrich**:
