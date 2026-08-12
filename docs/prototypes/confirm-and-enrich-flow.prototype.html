@@ -1,0 +1,1169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROTOTYPE — The confirm-and-enrich capture flow</title>
+<style>
+  :root {
+    --ink: #16181d;
+    --ink-soft: #5a606b;
+    --ink-faint: #8b919c;
+    --line: #e3e5ea;
+    --paper: #fbfbfc;
+    --card: #ffffff;
+    --accent: #1f6feb;
+    --accent-soft: #eaf1fe;
+    --warn: #a8580a;
+    --warn-soft: #fdf3e6;
+    --bad: #b3261e;
+    --bad-soft: #fdecea;
+    --good: #17694a;
+    --good-soft: #e8f4ee;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 28px 120px; }
+  header.top { border-bottom: 1px solid var(--line); padding-bottom: 28px; margin-bottom: 32px; }
+  .tag {
+    display: inline-block; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    font-weight: 700; color: var(--bad); background: var(--bad-soft);
+    padding: 3px 8px; border-radius: 4px; margin-bottom: 14px;
+  }
+  h1 { font-size: 28px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin: 0 0 14px; font-weight: 700; }
+  h3 { font-size: 15px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; max-width: 74ch; }
+  .lede { color: var(--ink-soft); }
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 34px; align-items: start; }
+  @media (max-width: 940px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+  section { margin-bottom: 34px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card + .card { margin-top: 14px; }
+  button {
+    font: inherit; font-size: 13px; cursor: pointer; color: var(--ink);
+    background: var(--card); border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 12px; text-align: left;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { background: #1a5fd0; color: #fff; }
+  button.step { display: block; width: 100%; margin-bottom: 7px; }
+  button.step.done { opacity: .45; }
+  button.ghost { color: var(--ink-soft); }
+  .btnrow { display: flex; flex-wrap: wrap; gap: 7px; }
+  .group { margin-bottom: 16px; }
+  .group-label { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint); font-weight: 700; margin-bottom: 7px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .tabs button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  mark.change { background: #fff5c2; padding: 0 3px; border-radius: 3px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13px; }
+  .kv dt { color: var(--ink-faint); }
+  .kv dd { margin: 0; }
+  .item { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; background: var(--card); }
+  .item.blocked { border-color: #f0c9c5; background: var(--bad-soft); }
+  .item.attn { border-color: #f0dcc0; background: var(--warn-soft); }
+  .pill {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 20px; background: var(--accent-soft); color: var(--accent);
+  }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.good { background: var(--good-soft); color: var(--good); }
+  .pill.mute { background: #eff0f3; color: var(--ink-soft); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 8px 0 2px; }
+  th { text-align: left; color: var(--ink-faint); font-weight: 600; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }
+  td { padding: 4px 8px 4px 0; border-bottom: 1px solid #f2f3f5; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; padding-right: 14px; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; font-size: 12.5px; color: var(--accent); }
+  .log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.65; max-height: 300px; overflow: auto; }
+  .log div { padding: 1px 0; border-bottom: 1px solid #f4f5f7; }
+  .log .l-bad { color: var(--bad); }
+  .log .l-warn { color: var(--warn); }
+  .log .l-good { color: var(--good); }
+  .log .l-mute { color: var(--ink-faint); }
+  .empty { color: var(--ink-faint); font-size: 13px; font-style: italic; }
+  .clock { display: flex; align-items: baseline; gap: 10px; }
+  .clock strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .q { border-left: 3px solid var(--accent); padding-left: 14px; margin: 18px 0; }
+  .q ul { margin: 6px 0 0; padding-left: 20px; }
+  .q li { margin-bottom: 5px; color: var(--ink-soft); }
+  .sticky { position: sticky; top: 20px; }
+  .hint { font-size: 12.5px; color: var(--ink-faint); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <span class="tag">Throwaway prototype · wayfinder ticket #10</span>
+  <h1>The confirm-and-enrich capture flow</h1>
+  <p class="lede">
+    Nothing in this journal commits blindly. A broker statement is dropped in, parsed, reconciled against
+    what is already journalled, and offered back as <strong>proposals</strong> a human confirms or corrects.
+    Only then does anything become a Trade, and only then does enrichment run.
+    This page is that flow made concrete so you can push it through the cases that are hard to argue about on
+    paper — a partial exit against two open Trades in the same symbol, a broker restating a fill after the
+    Trade froze, a statement whose columns shifted, an exit for an entry that was never journalled.
+  </p>
+  <div class="q">
+    <strong>The question this prototype exists to answer:</strong>
+    <ul>
+      <li>Is the <strong>confirm queue</strong> the right single door — for broker imports <em>and</em> hand-entered backdated Trades?</li>
+      <li>Does treating every failure as a <strong>queue item with a defined behaviour</strong> (rather than an error) actually cover the cases?</li>
+      <li>Is <strong>"correct a fact once, remember a rule forever"</strong> the right line for not re-confirming the same misparse every week?</li>
+      <li>Does splitting enrichment into <strong>entry-dated at confirm</strong> and <strong>rolling in the daily job</strong> hold up?</li>
+    </ul>
+  </div>
+  <p class="hint">
+    Prices, fees, fill structures and the Stockbit fee identity are the real ones from <code>docs/samples/</code>.
+    Bars, equity and the calendar are faked. No persistence — reload to reset.
+  </p>
+</header>
+
+<div class="cols">
+
+  <!-- ─────────────── LEFT: drive it ─────────────── -->
+  <div>
+    <section>
+      <h2>Trading calendar</h2>
+      <div class="card">
+        <div class="clock">
+          <strong id="clock"></strong>
+          <span class="lede" id="clockNote"></span>
+        </div>
+        <div class="btnrow" style="margin-top:12px">
+          <button data-act="ADVANCE_1">Next trading day</button>
+          <button data-act="ADVANCE_20">Skip 20 trading days</button>
+          <button data-act="DAILY_JOB" class="primary">Run the daily job</button>
+        </div>
+        <p class="hint">The daily job fills rolling and post-exit fields, freezes what is due, and raises drift.
+        It never commits a Trade — only the confirm queue does that.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Free play</h2>
+      <div class="card">
+        <div class="group">
+          <div class="group-label">Drop a statement in</div>
+          <div class="btnrow" id="dropBtns"></div>
+        </div>
+        <div class="group">
+          <div class="group-label">Work the confirm queue</div>
+          <div class="btnrow">
+            <button data-act="CONFIRM_TOP" class="primary">Confirm the top item</button>
+            <button data-act="CORRECT_QTY">Correct a quantity (this fill only)</button>
+            <button data-act="REMEMBER_SYMBOL">Fix the symbol &amp; remember the rule</button>
+            <button data-act="OVERRIDE_FIFO">Override the FIFO allocation</button>
+            <button data-act="ACK_DRIFT">Acknowledge drift</button>
+            <button data-act="RECHECK">Re-check the parked items</button>
+            <button data-act="DISCARD_TOP" class="ghost">Discard the top item</button>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-label">Hand entry</div>
+          <div class="btnrow">
+            <button data-act="MANUAL_ENTRY">Enter a backdated Trade by hand</button>
+            <button data-act="MANUAL_EXIT">Enter its exit by hand</button>
+          </div>
+        </div>
+        <div class="group" style="margin-bottom:0">
+          <div class="group-label">Reset</div>
+          <div class="btnrow"><button data-act="RESET" class="ghost">Start over</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Guided walkthroughs</h2>
+      <div class="tabs" id="tabs"></div>
+      <div class="card" id="scenario"></div>
+    </section>
+
+    <section>
+      <h2>What the system said</h2>
+      <div class="card log" id="log"></div>
+    </section>
+  </div>
+
+  <!-- ─────────────── RIGHT: watch it ─────────────── -->
+  <div class="sticky">
+    <section>
+      <h2>The confirm queue <span class="pill mute" id="queueCount"></span></h2>
+      <div id="queue"></div>
+      <p class="hint">Every item here is a decision waiting on a human. Nothing below it has committed.</p>
+    </section>
+
+    <section>
+      <h2>Journalled Trades</h2>
+      <div id="trades"></div>
+    </section>
+
+    <section>
+      <h2>Remembered parse rules</h2>
+      <div class="card" id="memory"></div>
+    </section>
+
+    <section>
+      <h2>Fill ledger <span class="pill mute" id="fillCount"></span></h2>
+      <div class="card"><div id="fills"></div></div>
+      <p class="hint">Append-only. A restatement lands as a new revision; the superseded row stays.</p>
+    </section>
+  </div>
+</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     THE PORTABLE BIT. A pure reducer over the capture flow. No DOM in here.
+     This is the part meant to survive the prototype.
+     ══════════════════════════════════════════════════════════════════════ -->
+<script>
+const FLOW = (() => {
+
+  // ── Reference data the flow reads (in the real thing: bar cache, equity snapshots) ──
+  const BARS_AVAILABLE = { NVDA: true, FUTR: true, TSLA: true, AVGO: true };  // ZZZQ deliberately absent
+  const EQUITY = { US: 100000, IDX: 500000000 };
+  const FREEZE_AFTER_DAYS = 20;
+
+  const EXIT_REASONS = ["partial_strength", "close_below_ma10", "close_below_ma20", "stop_hit", "discretionary"];
+
+  // ── Initial state ──
+  const initial = () => ({
+    day: 0,                 // trading days since the journal opened; day 0 == 2026-08-03
+    fills: [],              // append-only ledger
+    trades: [],             // entry-day cohorts
+    queue: [],              // proposals awaiting a human
+    memory: [],             // remembered parse rules
+    docsSeen: [],           // content hashes of documents already ingested
+    log: [],
+    seq: 1,
+  });
+
+  // ── Helpers ──
+  const DAY0 = Date.UTC(2026, 7, 3);
+  const dateOf = (day) => new Date(DAY0 + day * 86400000).toISOString().slice(0, 10);
+  const dayOf = (iso) => Math.round((Date.parse(iso) - DAY0) / 86400000);
+  const clone = (s) => JSON.parse(JSON.stringify(s));
+  const say = (s, msg, kind = "") => s.log.unshift({ day: s.day, msg, kind });
+  const openTrades = (s, book, symbol) =>
+    s.trades.filter(t => t.book === book && t.symbol === symbol && t.openQty > 0)
+            .sort((a, b) => dayOf(a.entryDate) - dayOf(b.entryDate));   // FIFO order
+  const money = (book, n) => book === "IDX"
+    ? "Rp" + Math.round(n).toLocaleString("en-US")
+    : "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // ── Parsing ──────────────────────────────────────────────────────────
+  // Real parsers do this from XML / pdftotext. Here the doc arrives pre-shaped,
+  // but everything the flow *decides* from a parse happens for real:
+  //   · a deterministic source_ref, so a re-drop is idempotent
+  //   · dedupe on content, never on filename (the same SoA arrives twice, renamed)
+  //   · a document-level self-check (Stockbit's fee identity) that quarantines layout drift
+  function parse(doc, memory) {
+    if (doc.corrupt) return { ok: false, why: "No text layer — the PDF is a scan, or the download truncated." };
+
+    // Remembered rules apply before anything reaches a human.
+    let applied = [];
+    const rows = doc.rows.map(r => {
+      let row = { ...r };
+      for (const rule of memory) {
+        if (rule.kind === "symbol" && rule.source === doc.source && rule.from === row.symbol) {
+          row.symbol = rule.to;
+          applied.push(`${rule.from} → ${rule.to}`);
+        }
+      }
+      return row;
+    });
+
+    // Stockbit's daily self-check: recompute the printed total from the parsed rows.
+    if (doc.feeCheck) {
+      const gross = rows.filter(r => r.side === "BUY").reduce((a, r) => a + r.qty * r.price, 0);
+      const computed = gross + gross * 0.0015 + 10000;   // 0.15% all-in + flat Rp10,000 stamp duty
+      if (Math.abs(computed - doc.feeCheck.printedTotal) > 1) {
+        return {
+          ok: false,
+          why: `Fee identity failed. Rows recompute to Rp${Math.round(computed).toLocaleString()} but the document prints Rp${doc.feeCheck.printedTotal.toLocaleString()}. A column has shifted.`,
+          hard: true,
+        };
+      }
+    }
+    return { ok: true, rows, applied };
+  }
+
+  // ── Reconciliation ───────────────────────────────────────────────────
+  // Turn parsed rows into proposals, against what is already journalled.
+  function reconcile(s, doc, rows) {
+    const items = [];
+
+    // Buys group by (book, symbol, date) — that grouping *is* the Trade.
+    const buys = rows.filter(r => r.side === "BUY");
+    const byCohort = {};
+    buys.forEach(r => { (byCohort[`${doc.book}|${r.symbol}|${r.date}`] ||= []).push(r); });
+
+    Object.entries(byCohort).forEach(([key, group]) => {
+      const [book, symbol, date] = key.split("|");
+      const existing = s.trades.find(t => t.book === book && t.symbol === symbol && t.entryDate === date);
+      const others = openTrades(s, book, symbol).filter(t => t.entryDate !== date);
+      items.push({
+        id: s.seq++,
+        kind: existing ? "add-fills" : "new-trade",
+        book, symbol, entryDate: date,
+        tradeId: existing ? existing.id : null,
+        rows: group,
+        qty: group.reduce((a, r) => a + r.qty, 0),
+        avgPrice: group.reduce((a, r) => a + r.qty * r.price, 0) / group.reduce((a, r) => a + r.qty, 0),
+        cost: group.reduce((a, r) => a + r.cost, 0),
+        needs: existing ? [] : ["stop", "setup"],
+        stop: null, setup: null,
+        note: others.length
+          ? `${others.length} other open Trade${others.length > 1 ? "s" : ""} in ${symbol} (entered ${others.map(t => t.entryDate).join(", ")}). A different entry day is a different Trade — this does not add to it.`
+          : null,
+        barsMissing: !BARS_AVAILABLE[symbol],
+      });
+    });
+
+    // Sells allocate against open Trades, FIFO by entry date, overridable.
+    rows.filter(r => r.side === "SELL").forEach(r => {
+      const open = openTrades(s, doc.book, r.symbol);
+      const capacity = open.reduce((a, t) => a + t.openQty, 0);
+      if (capacity === 0) {
+        items.push({
+          id: s.seq++, kind: "orphan-exit", blocked: true,
+          book: doc.book, symbol: r.symbol, rows: [r], qty: r.qty,
+          why: `${r.qty} shares of ${r.symbol} sold on ${r.date}, but nothing in ${r.symbol} is journalled as open. The entry predates the journal, or an import was skipped.`,
+          remedy: "Enter the missing Trade by hand (backdated), then re-drop this statement — the source_ref makes that safe.",
+        });
+        return;
+      }
+      let remaining = r.qty, alloc = [];
+      for (const t of open) {
+        if (remaining <= 0) break;
+        const take = Math.min(remaining, t.openQty);
+        alloc.push({ tradeId: t.id, entryDate: t.entryDate, qty: take });
+        remaining -= take;
+      }
+      items.push({
+        id: s.seq++, kind: "exit-allocation",
+        book: doc.book, symbol: r.symbol, rows: [r],
+        qty: r.qty, price: r.price, date: r.date, cost: r.cost,
+        alloc, overAllocated: remaining,
+        proposedReason: r.qty < capacity ? "partial_strength" : "close_below_ma10",
+        blocked: remaining > 0,
+        why: remaining > 0
+          ? `Sold ${r.qty} but only ${capacity} is journalled as open. ${remaining} shares are unaccounted for.`
+          : null,
+        remedy: remaining > 0 ? "Enter the missing Trade by hand, then re-drop." : null,
+      });
+    });
+
+    return items;
+  }
+
+  // ── Enrichment ───────────────────────────────────────────────────────
+  // Two clocks, deliberately. Entry-dated fields can be computed the moment a
+  // Trade commits. Rolling and post-exit fields cannot exist yet, so they wait
+  // for the daily job. Missing bars never block the commit.
+  function enrichAtConfirm(s, t) {
+    if (!BARS_AVAILABLE[t.symbol]) {
+      t.enrichment = { status: "needs-repair", why: `No bar series covers ${t.symbol} on ${t.entryDate}. This is a repair, not "no data".` };
+      s.queue.push({
+        id: s.seq++, kind: "enrichment-repair", attn: true, tradeId: t.id,
+        book: t.book, symbol: t.symbol,
+        why: `${t.symbol} committed, but the bar series does not span ${t.entryDate}. Every derived field is missing.`,
+        remedy: "Fix the symbol mapping or the source, then re-run enrichment. The Trade itself is already safe.",
+      });
+      say(s, `${t.symbol} committed with enrichment held — span check failed`, "l-warn");
+      return;
+    }
+    const risk = ((t.avgEntry - t.stop) * t.qty) / EQUITY[t.book];
+    t.enrichment = {
+      status: "entry-dated",
+      asOf: t.entryDate,
+      riskPct: +(risk * 100).toFixed(2),
+      riskFlag: risk > 0.01,
+      exposurePct: +((t.notional / EQUITY[t.book]) * 100).toFixed(2),
+      rolling: "waiting for the daily job",
+    };
+    if (risk > 0.01) say(s, `${t.symbol} risk ${(risk * 100).toFixed(2)}% — above the 1% line`, "l-warn");
+  }
+
+  // ── The reducer ──────────────────────────────────────────────────────
+  function reduce(state, action) {
+    const s = clone(state);
+    const A = action;
+
+    switch (A.type) {
+
+      case "RESET": return initial();
+
+      case "ADVANCE": {
+        s.day += A.days;
+        say(s, `Clock moved to ${dateOf(s.day)}`, "l-mute");
+        return s;
+      }
+
+      // ── Drop a statement ───────────────────────────────────────────
+      case "DROP": {
+        const doc = A.doc;
+
+        // Dedupe on content, never on filename. The same document is redelivered renamed.
+        if (s.docsSeen.includes(doc.hash)) {
+          say(s, `${doc.filename} — already ingested (same content, seen as "${doc.hash}"). Nothing to do.`, "l-mute");
+          return s;
+        }
+
+        const parsed = parse(doc, s.memory);
+        if (!parsed.ok) {
+          s.queue.push({
+            id: s.seq++, kind: "quarantine", blocked: true,
+            filename: doc.filename, why: parsed.why,
+            remedy: parsed.hard
+              ? "Nothing from this document commits. Fix the parser against the new layout, then re-drop."
+              : "Re-download the statement, or fetch it again from the mailbox.",
+          });
+          say(s, `${doc.filename} quarantined — ${parsed.why}`, "l-bad");
+          return s;
+        }
+        if (parsed.applied.length) say(s, `Applied remembered rule: ${parsed.applied.join(", ")} — no confirmation needed`, "l-good");
+
+        s.docsSeen.push(doc.hash);
+
+        // Revisions: a fill we already hold, restated by the broker.
+        const fresh = [], revisions = [];
+        parsed.rows.forEach(r => {
+          const prior = s.fills.find(f => f.source === doc.source && f.sourceRef === r.ref && !f.superseded);
+          if (!prior) return fresh.push(r);
+          if (prior.price === r.price && prior.qty === r.qty) return;      // identical: idempotent
+          revisions.push({ prior, row: r });
+        });
+
+        revisions.forEach(({ prior, row }) => {
+          s.queue.push({
+            id: s.seq++, kind: "restatement", attn: true,
+            book: doc.book, symbol: row.symbol, sourceRef: row.ref,
+            before: { qty: prior.qty, price: prior.price },
+            after: { qty: row.qty, price: row.price },
+            tradeId: prior.tradeId,
+            why: `${doc.source} restated fill ${row.ref}: ${prior.qty}@${prior.price} → ${row.qty}@${row.price}.`,
+            remedy: "Accepting adds a new revision to the ledger and re-derives the Trade. The old revision is kept, never edited.",
+          });
+        });
+        if (revisions.length) say(s, `${revisions.length} restated fill(s) from ${doc.filename}`, "l-warn");
+
+        if (!fresh.length && !revisions.length) {
+          say(s, `${doc.filename} — every fill already in the ledger. Idempotent re-drop.`, "l-mute");
+          return s;
+        }
+
+        const items = reconcile(s, doc, fresh);
+        items.forEach(i => { i.filename = doc.filename; i.source = doc.source; s.queue.push(i); });
+        say(s, `${doc.filename}: ${fresh.length} fill(s) parsed → ${items.length} proposal(s). Nothing committed yet.`);
+        return s;
+      }
+
+      // ── Hand entry uses the same door ──────────────────────────────
+      case "MANUAL_ENTRY": {
+        const d = dateOf(s.day - A.daysAgo);
+        s.queue.push({
+          id: s.seq++, kind: "new-trade", manual: true,
+          book: A.book, symbol: A.symbol, entryDate: d,
+          rows: [{ ref: `manual-${s.seq}`, symbol: A.symbol, date: d, side: "BUY", qty: A.qty, price: A.price, cost: A.qty * A.price }],
+          qty: A.qty, avgPrice: A.price, cost: 0,
+          needs: ["stop", "setup"], stop: null, setup: null,
+          barsMissing: !BARS_AVAILABLE[A.symbol],
+          note: `Hand-entered, backdated to ${d}. It goes through confirm like any import — same fields, same checks, and stop provenance will read "reconstructed".`,
+        });
+        say(s, `Backdated ${A.symbol} entry queued for ${d} — hand entry does not bypass confirm`);
+        return s;
+      }
+
+      case "MANUAL_EXIT": {
+        const t = s.trades.filter(x => x.openQty > 0 && x.manual)[0] || s.trades.filter(x => x.openQty > 0)[0];
+        if (!t) { say(s, "No open Trade to exit.", "l-mute"); return s; }
+        const d = dateOf(s.day - A.daysAgo);
+        s.queue.push({
+          id: s.seq++, kind: "exit-allocation", manual: true,
+          book: t.book, symbol: t.symbol, qty: t.openQty, price: A.price, date: d, cost: 0,
+          alloc: [{ tradeId: t.id, entryDate: t.entryDate, qty: t.openQty }],
+          overAllocated: 0, proposedReason: "close_below_ma10",
+          note: "Hand-entered exit. Same allocation step — the human names the Trade, enrichment still proposes the reason.",
+        });
+        say(s, `Backdated ${t.symbol} exit queued for ${d}`);
+        return s;
+      }
+
+      // ── Corrections: a fact, or a rule ─────────────────────────────
+      // The distinction the prototype is testing. A wrong quantity is a fact about
+      // one fill: fix it here, once. A wrong symbol is a rule about the parser:
+      // fix it once and never be asked again.
+      case "CORRECT_QTY": {
+        const i = s.queue.find(x => x.rows && x.rows.length);
+        if (!i) { say(s, "Nothing in the queue with fills to correct.", "l-mute"); return s; }
+        const before = i.qty;
+        i.rows[0].qty = A.qty;
+        i.qty = i.rows.reduce((a, r) => a + r.qty, 0);
+        if (i.kind === "exit-allocation") {
+          // A corrected exit quantity has to re-allocate — otherwise the confirm
+          // commits a 200-share sell that only closes 150 of the Trade.
+          const open = openTrades(s, i.book, i.symbol);
+          let remaining = i.qty; i.alloc = [];
+          for (const t of open) {
+            if (remaining <= 0) break;
+            const take = Math.min(remaining, t.openQty);
+            i.alloc.push({ tradeId: t.id, entryDate: t.entryDate, qty: take });
+            remaining -= take;
+          }
+          i.allocOverridden = false;
+          i.overAllocated = remaining;
+          i.blocked = remaining > 0;
+          i.why = remaining > 0 ? `Corrected to ${i.qty}, but only ${i.qty - remaining} is journalled as open.` : null;
+          i.remedy = remaining > 0 ? "Enter the missing Trade by hand, then re-drop." : null;
+        } else {
+          i.avgPrice = i.rows.reduce((a, r) => a + r.qty * r.price, 0) / i.qty;
+        }
+        i.corrected = `quantity ${before} → ${i.qty}, this fill only`;
+        say(s, `Corrected ${i.symbol} quantity ${before} → ${i.qty}. Not remembered — a fact about one fill.`, "l-warn");
+        return s;
+      }
+
+      case "REMEMBER_SYMBOL": {
+        const i = s.queue.find(x => x.symbol === A.from);
+        if (!i) { say(s, `Nothing queued mentions ${A.from}.`, "l-mute"); return s; }
+        s.memory.push({ kind: "symbol", source: i.source || "stockbit", from: A.from, to: A.to });
+        i.symbol = A.to;
+        if (i.rows) i.rows.forEach(r => r.symbol = A.to);
+        i.barsMissing = !BARS_AVAILABLE[A.to];
+        i.corrected = `symbol ${A.from} → ${A.to}, remembered as a rule`;
+
+        // A remembered rule also repairs what already committed under the wrong symbol.
+        if (i.kind === "enrichment-repair") {
+          const t = s.trades.find(x => x.id === i.tradeId);
+          t.symbol = A.to;
+          s.fills.filter(f => f.tradeId === t.id).forEach(f => f.symbol = A.to);
+          enrichAtConfirm(s, t);
+          s.queue = s.queue.filter(x => x.id !== i.id);
+          say(s, `${A.from} → ${A.to} remembered, and the held Trade re-enriched under the real symbol.`, "l-good");
+          return s;
+        }
+        say(s, `${A.from} → ${A.to} remembered. Every future ${i.source || "stockbit"} statement applies it silently.`, "l-good");
+        return s;
+      }
+
+      case "OVERRIDE_FIFO": {
+        const i = s.queue.find(x => x.kind === "exit-allocation" && x.alloc.length);
+        if (!i) { say(s, "No exit allocation to override.", "l-mute"); return s; }
+        const open = openTrades(s, i.book, i.symbol);
+        if (open.length < 2) { say(s, "Only one open Trade in this symbol — nothing to reallocate to.", "l-mute"); return s; }
+        // Newest first, but still bounded by what each Trade actually holds open.
+        // An override may never allocate more to a Trade than it has left.
+        let remaining = i.qty; i.alloc = [];
+        for (const t of [...open].reverse()) {
+          if (remaining <= 0) break;
+          const take = Math.min(remaining, t.openQty);
+          i.alloc.push({ tradeId: t.id, entryDate: t.entryDate, qty: take });
+          remaining -= take;
+        }
+        i.allocOverridden = true;
+        i.overAllocated = remaining;
+        say(s, `Allocation overridden — LIFO instead of FIFO: ${i.alloc.map(a => `${a.qty} from ${a.entryDate}`).join(", ")}`, "l-warn");
+        return s;
+      }
+
+      case "ACK_DRIFT": {
+        const i = s.queue.find(x => x.kind === "drift");
+        if (!i) { say(s, "No drift to acknowledge.", "l-mute"); return s; }
+        const t = s.trades.find(x => x.id === i.tradeId);
+        t.driftAcknowledged = true;
+        s.queue = s.queue.filter(x => x.id !== i.id);
+        say(s, `Drift on ${t.symbol} acknowledged. The frozen snapshot stands — it is what was true at freeze.`, "l-good");
+        return s;
+      }
+
+      case "DISCARD_TOP": {
+        const i = s.queue[0];
+        if (!i) return s;
+        s.queue = s.queue.slice(1);
+        say(s, `Discarded: ${i.kind} ${i.symbol || i.filename || ""}. Nothing committed.`, "l-mute");
+        return s;
+      }
+
+      // ── Confirm: the only thing that commits ───────────────────────
+      case "CONFIRM_TOP": {
+        if (!s.queue.length) { say(s, "Queue is empty.", "l-mute"); return s; }
+        // A blocked item is parked, not a roadblock: it must never stall the
+        // items behind it, or one orphan exit halts the week's whole import.
+        const i = s.queue.find(x => !x.blocked);
+        if (!i) {
+          say(s, `Nothing confirmable — ${s.queue.length} item(s) parked: ${s.queue.map(x => `${x.kind} (${x.symbol || x.filename})`).join("; ")}`, "l-bad");
+          return s;
+        }
+
+        if (i.kind === "new-trade") {
+          const stop = i.stop ?? A.stop ?? +(i.avgPrice * 0.93).toFixed(2);
+          const t = {
+            id: s.seq++, book: i.book, symbol: i.symbol, entryDate: i.entryDate,
+            qty: i.qty, openQty: i.qty, avgEntry: +i.avgPrice.toFixed(4),
+            notional: +(i.qty * i.avgPrice).toFixed(2), fees: i.cost,
+            stop, setup: i.setup ?? A.setup ?? "base_breakout",
+            stopProvenance: i.manual ? "reconstructed" : "recorded",
+            manual: !!i.manual, state: "open", exits: [], enrichment: {},
+          };
+          i.rows.forEach(r => s.fills.push({
+            id: s.seq++, source: i.source || "manual", sourceRef: r.ref, revision: 1,
+            book: i.book, symbol: r.symbol, date: r.date, side: r.side,
+            qty: r.qty, price: r.price, cost: r.cost, tradeId: t.id,
+          }));
+          s.trades.push(t);
+          enrichAtConfirm(s, t);
+          s.queue = s.queue.filter(x => x.id !== i.id);
+          say(s, `Committed: Trade ${t.symbol} ${t.entryDate}, ${t.qty} @ ${t.avgEntry} — stop ${t.stop}, ${t.setup}`, "l-good");
+          return s;
+        }
+
+        if (i.kind === "add-fills") {
+          const t = s.trades.find(x => x.id === i.tradeId);
+          i.rows.forEach(r => s.fills.push({
+            id: s.seq++, source: i.source, sourceRef: r.ref, revision: 1,
+            book: i.book, symbol: r.symbol, date: r.date, side: r.side,
+            qty: r.qty, price: r.price, cost: r.cost, tradeId: t.id,
+          }));
+          const totalQty = t.qty + i.qty;
+          t.avgEntry = +(((t.avgEntry * t.qty) + (i.avgPrice * i.qty)) / totalQty).toFixed(4);
+          t.qty = totalQty; t.openQty += i.qty;
+          t.notional = +(totalQty * t.avgEntry).toFixed(2); t.fees += i.cost;
+          enrichAtConfirm(s, t);
+          s.queue = s.queue.filter(x => x.id !== i.id);
+          say(s, `Merged ${i.qty} more into the existing ${t.symbol} ${t.entryDate} Trade — same entry day, same Trade`, "l-good");
+          return s;
+        }
+
+        if (i.kind === "exit-allocation") {
+          if (i.overAllocated > 0) {
+            say(s, `Cannot confirm — ${i.overAllocated} shares of this sell have no journalled Trade to come out of.`, "l-bad");
+            return s;
+          }
+          i.alloc.forEach(a => {
+            const t = s.trades.find(x => x.id === a.tradeId);
+            t.exits.push({
+              date: i.date, qty: a.qty, price: i.price,
+              reason: i.reason || i.proposedReason, day: dayOf(i.date),
+            });
+            t.openQty -= a.qty;
+            if (t.openQty === 0) {
+              t.state = "closed";
+              t.lastExitDay = dayOf(i.date);
+              const proceeds = t.exits.reduce((x, e) => x + e.qty * e.price, 0);
+              const pnl = proceeds - t.notional - t.fees;
+              t.realizedR = t.stop < t.avgEntry
+                ? +(pnl / ((t.avgEntry - t.stop) * t.qty)).toFixed(2) : null;
+              t.pnl = +pnl.toFixed(2);
+            }
+          });
+          s.fills.push({
+            id: s.seq++, source: i.source || "manual", sourceRef: i.rows ? i.rows[0].ref : `manual-x-${s.seq}`,
+            revision: 1, book: i.book, symbol: i.symbol, date: i.date, side: "SELL",
+            qty: i.qty, price: i.price, cost: i.cost || 0,
+            tradeId: i.alloc.map(a => a.tradeId).join("+"),
+          });
+          s.queue = s.queue.filter(x => x.id !== i.id);
+          say(s, `Exit committed: ${i.qty} ${i.symbol} @ ${i.price}, reason "${i.reason || i.proposedReason}", allocated ${i.alloc.map(a => `${a.qty}→${a.entryDate}`).join(", ")}`, "l-good");
+          return s;
+        }
+
+        if (i.kind === "restatement") {
+          const prior = s.fills.find(f => f.sourceRef === i.sourceRef && !f.superseded);
+          prior.superseded = true;
+          s.fills.push({
+            ...prior, id: s.seq++, revision: prior.revision + 1,
+            qty: i.after.qty, price: i.after.price, superseded: false,
+          });
+          const t = s.trades.find(x => x.id === prior.tradeId);
+          if (t) {
+            if (t.state === "frozen") {
+              s.queue.push({
+                id: s.seq++, kind: "drift", attn: true, tradeId: t.id, book: t.book, symbol: t.symbol,
+                why: `${t.symbol} froze with avg entry ${t.frozen.avgEntry}, but the restated fill re-derives it to ${i.after.price}. The snapshot and today's derivation disagree.`,
+                remedy: "Acknowledge it. A frozen Trade is not silently rewritten — the snapshot is the record of what was believed then.",
+              });
+              say(s, `Restatement landed on a FROZEN Trade — raised as drift, snapshot untouched`, "l-warn");
+            } else {
+              const live = s.fills.filter(f => f.tradeId === t.id && f.side === "BUY" && !f.superseded);
+              t.qty = live.reduce((a, f) => a + f.qty, 0);
+              t.avgEntry = +(live.reduce((a, f) => a + f.qty * f.price, 0) / t.qty).toFixed(4);
+              enrichAtConfirm(s, t);
+              say(s, `${t.symbol} re-derived from revision 2 — avg entry now ${t.avgEntry}`, "l-good");
+            }
+          }
+          s.queue = s.queue.filter(x => x.id !== i.id);
+          return s;
+        }
+
+        if (i.kind === "enrichment-repair") {
+          const t = s.trades.find(x => x.id === i.tradeId);
+          if (!BARS_AVAILABLE[t.symbol]) {
+            say(s, `Still no bars for ${t.symbol} — the repair is upstream, not here.`, "l-bad");
+            return s;
+          }
+          enrichAtConfirm(s, t);
+          s.queue = s.queue.filter(x => x.id !== i.id);
+          say(s, `Enrichment repaired for ${t.symbol}`, "l-good");
+          return s;
+        }
+
+        say(s, `${i.kind} needs its own action, not a plain confirm.`, "l-warn");
+        return s;
+      }
+
+      // ── Re-check the parked items ──────────────────────────────────
+      // A parked item is only parked against the journal *as it was*. Once a
+      // missing Trade is entered by hand, the orphan exit should resolve itself
+      // rather than needing the statement dropped again.
+      case "RECHECK": {
+        let freed = 0;
+        s.queue.forEach(i => {
+          if (!i.blocked || (i.kind !== "orphan-exit" && i.kind !== "exit-allocation")) return;
+          const open = openTrades(s, i.book, i.symbol);
+          let remaining = i.qty, alloc = [];
+          for (const t of open) {
+            if (remaining <= 0) break;
+            const take = Math.min(remaining, t.openQty);
+            alloc.push({ tradeId: t.id, entryDate: t.entryDate, qty: take });
+            remaining -= take;
+          }
+          if (remaining > 0) return;
+          i.kind = "exit-allocation";
+          i.alloc = alloc;
+          i.overAllocated = 0;
+          i.blocked = false;
+          i.price = i.price ?? i.rows[0].price;
+          i.date = i.date ?? i.rows[0].date;
+          i.proposedReason = i.proposedReason || "close_below_ma10";
+          i.why = null;
+          i.note = "Was parked as an orphan exit. The missing Trade now exists, so it allocated cleanly.";
+          freed++;
+        });
+        say(s, freed ? `${freed} parked item(s) resolved against the journal as it now stands.` : "Nothing parked can be resolved yet.", freed ? "l-good" : "l-mute");
+        return s;
+      }
+
+      // ── The daily job ──────────────────────────────────────────────
+      case "DAILY_JOB": {
+        let touched = 0;
+        s.trades.forEach(t => {
+          if (t.state === "frozen") return;
+          if (t.enrichment.status === "needs-repair") return;    // held, not retried blindly
+          if (t.openQty > 0) {
+            t.enrichment.rolling = `MA10/MA20 distance as of ${dateOf(s.day)}`;
+            t.enrichment.asOfRolling = dateOf(s.day);
+            touched++;
+            return;
+          }
+          const elapsed = s.day - t.lastExitDay;
+          t.enrichment.postExit = elapsed >= FREEZE_AFTER_DAYS
+            ? "20-day window complete"
+            : `${elapsed}/${FREEZE_AFTER_DAYS} trading days into the post-exit window`;
+          if (t.state === "closed" && elapsed >= FREEZE_AFTER_DAYS) {
+            t.state = "frozen";
+            t.frozen = { avgEntry: t.avgEntry, realizedR: t.realizedR, riskPct: t.enrichment.riskPct, at: dateOf(s.day) };
+            say(s, `${t.symbol} FROZEN — hand-entered fields locked, derived values snapshotted`, "l-good");
+          }
+          touched++;
+        });
+        say(s, `Daily job: ${touched} Trade(s) enriched. It commits nothing.`, "l-mute");
+        return s;
+      }
+
+      default:
+        say(s, `Unknown action ${A.type}`, "l-bad");
+        return s;
+    }
+  }
+
+  return { initial, reduce, dateOf, dayOf, money, EXIT_REASONS, FREEZE_AFTER_DAYS, EQUITY, BARS_AVAILABLE };
+})();
+</script>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     THE THROWAWAY SHELL. Documents, buttons, rendering. Nothing decides here.
+     ══════════════════════════════════════════════════════════════════════ -->
+<script>
+// ── Sample documents, shaped from the real files in docs/samples/ ──
+const DOCS = {
+  ibkrEntry: {
+    key: "ibkrEntry", label: "IBKR · NVDA entry (2 fills, one order)",
+    filename: "flex_2026-08-03.xml", source: "ibkr", book: "US", hash: "ibkr-aug3",
+    rows: [
+      { ref: "0001a3f.01", symbol: "NVDA", date: "2026-08-03", side: "BUY", qty: 100, price: 120.10, cost: 1.00 },
+      { ref: "0001a3f.02", symbol: "NVDA", date: "2026-08-03", side: "BUY", qty: 100, price: 120.40, cost: 1.00 },
+    ],
+  },
+  ibkrAddon: {
+    key: "ibkrAddon", label: "IBKR · NVDA add-on, 4 days later",
+    filename: "flex_2026-08-07.xml", source: "ibkr", book: "US", hash: "ibkr-aug7",
+    rows: [{ ref: "0002b71.01", symbol: "NVDA", date: "2026-08-07", side: "BUY", qty: 100, price: 131.00, cost: 1.00 }],
+  },
+  ibkrPartial: {
+    key: "ibkrPartial", label: "IBKR · NVDA sell 150 (partial)",
+    filename: "flex_2026-08-11.xml", source: "ibkr", book: "US", hash: "ibkr-aug11",
+    rows: [{ ref: "0003c22.01", symbol: "NVDA", date: "2026-08-11", side: "SELL", qty: 150, price: 140.00, cost: 1.50 }],
+  },
+  ibkrRestated: {
+    key: "ibkrRestated", label: "IBKR · same day, fill 2 restated",
+    filename: "flex_2026-08-03_v2.xml", source: "ibkr", book: "US", hash: "ibkr-aug3-v2",
+    rows: [
+      { ref: "0001a3f.01", symbol: "NVDA", date: "2026-08-03", side: "BUY", qty: 100, price: 120.10, cost: 1.00 },
+      { ref: "0001a3f.02", symbol: "NVDA", date: "2026-08-03", side: "BUY", qty: 100, price: 120.55, cost: 1.00 },
+    ],
+  },
+  ibkrOrphan: {
+    key: "ibkrOrphan", label: "IBKR · AVGO sell, never journalled",
+    filename: "flex_2026-08-12.xml", source: "ibkr", book: "US", hash: "ibkr-aug12",
+    rows: [{ ref: "0004d81.01", symbol: "AVGO", date: "2026-08-12", side: "SELL", qty: 50, price: 262.00, cost: 1.00 }],
+  },
+  stockbit: {
+    key: "stockbit", label: "Stockbit · FUTR TC (3 fills, one REF #)",
+    filename: "SUB1234_tc110826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug11",
+    rows: [
+      { ref: "0477722#1", symbol: "FUTR", date: "2026-08-11", side: "BUY", qty: 21800, price: 346, cost: 0 },
+      { ref: "0477722#2", symbol: "FUTR", date: "2026-08-11", side: "BUY", qty: 28200, price: 348, cost: 0 },
+      { ref: "0477722#3", symbol: "FUTR", date: "2026-08-11", side: "BUY", qty: 49200, price: 358, cost: 0 },
+    ],
+    feeCheck: { printedTotal: 35032455 },  // gross 34,970,000 + 0.15% (52,455) + Rp10,000 stamp — reconciles exactly
+  },
+  stockbitRenamed: {
+    key: "stockbitRenamed", label: "Stockbit · same TC, redelivered renamed",
+    filename: "0891234567_tc110826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug11",
+    rows: [], feeCheck: null,
+  },
+  stockbitDrifted: {
+    key: "stockbitDrifted", label: "Stockbit · columns shifted (Lot read as Quantity)",
+    filename: "SUB1234_tc120826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug12",
+    rows: [
+      { ref: "0488901#1", symbol: "FUTR", date: "2026-08-12", side: "BUY", qty: 300, price: 360, cost: 0 },
+    ],
+    feeCheck: { printedTotal: 10826200 },  // printed total is for 30,000 shares, not 300 lots
+  },
+  stockbitUnknown: {
+    key: "stockbitUnknown", label: "Stockbit · ZZZQ, a symbol with no bars",
+    filename: "SUB1234_tc130826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug13",
+    rows: [{ ref: "0499100#1", symbol: "ZZZQ", date: "2026-08-13", side: "BUY", qty: 10000, price: 1200, cost: 0 }],
+  },
+  corrupt: {
+    key: "corrupt", label: "Stockbit · scanned PDF, no text layer",
+    filename: "SUB1234_tc140826.pdf", source: "stockbit", book: "IDX", hash: "sb-tc-aug14", corrupt: true, rows: [],
+  },
+};
+
+// ── Walkthroughs ──
+const SCENARIOS = [
+  {
+    name: "Happy path",
+    blurb: "One US swing trade, start to frozen. Watch where enrichment splits: risk % and exposure exist the instant the Trade commits, but the rolling and post-exit fields only appear when the daily job runs. Nothing ever commits without a click.",
+    steps: [
+      ["Drop the NVDA entry statement", { type: "DROP", doc: DOCS.ibkrEntry }],
+      ["Confirm it — supplies stop 111.50 and setup", { type: "CONFIRM_TOP", stop: 111.50, setup: "base_breakout" }],
+      ["Run the daily job (rolling fields appear)", { type: "DAILY_JOB" }],
+      ["Move the clock on 1 day", { type: "ADVANCE", days: 1 }],
+      ["Drop the sell statement", { type: "DROP", doc: DOCS.ibkrPartial }],
+      ["Correct the quantity to 200 (full exit)", { type: "CORRECT_QTY", qty: 200 }],
+      ["Confirm the exit", { type: "CONFIRM_TOP" }],
+      ["Skip past the 20-day post-exit window", { type: "ADVANCE", days: 27 }],
+      ["Run the daily job → it freezes", { type: "DAILY_JOB" }],
+    ],
+  },
+  {
+    name: "Two Trades, one symbol",
+    blurb: "The awkward one. An add-on four days later is a different entry day, so it is a different Trade — not more of the first. Then a sell of 150 has to be allocated across both. FIFO is proposed; try overriding it and watch which Trade closes.",
+    steps: [
+      ["Drop the NVDA entry", { type: "DROP", doc: DOCS.ibkrEntry }],
+      ["Confirm it", { type: "CONFIRM_TOP", stop: 111.50 }],
+      ["Move on 4 days", { type: "ADVANCE", days: 4 }],
+      ["Drop the add-on (note what it says)", { type: "DROP", doc: DOCS.ibkrAddon }],
+      ["Confirm — a second Trade, its own stop", { type: "CONFIRM_TOP", stop: 124.00 }],
+      ["Move on 4 days", { type: "ADVANCE", days: 4 }],
+      ["Drop the sell of 150", { type: "DROP", doc: DOCS.ibkrPartial }],
+      ["Override FIFO → take it from the add-on instead", { type: "OVERRIDE_FIFO" }],
+      ["Confirm the exit", { type: "CONFIRM_TOP" }],
+    ],
+  },
+  {
+    name: "Re-drop & restatement",
+    blurb: "Three kinds of \"we have seen this before\". The identical document redelivered under another filename is a silent no-op. A document whose fills we already hold is idempotent. But a fill the broker has restated is a revision — and if the Trade already froze, it becomes drift rather than a rewrite.",
+    steps: [
+      ["Drop the NVDA entry", { type: "DROP", doc: DOCS.ibkrEntry }],
+      ["Confirm it", { type: "CONFIRM_TOP", stop: 111.50 }],
+      ["Drop the exact same file again", { type: "DROP", doc: DOCS.ibkrEntry }],
+      ["Close it out and freeze it: sell", { type: "DROP", doc: DOCS.ibkrPartial }],
+      ["Correct to 200 and confirm", { type: "CORRECT_QTY", qty: 200 }],
+      ["Confirm the exit", { type: "CONFIRM_TOP" }],
+      ["Skip past the post-exit window", { type: "ADVANCE", days: 28 }],
+      ["Run the daily job", { type: "DAILY_JOB" }],
+      ["Now IBKR restates fill 2", { type: "DROP", doc: DOCS.ibkrRestated }],
+      ["Accept the revision → raises drift", { type: "CONFIRM_TOP" }],
+      ["Acknowledge the drift", { type: "ACK_DRIFT" }],
+    ],
+  },
+  {
+    name: "The bad statement",
+    blurb: "Stockbit's fee identity is the parser's own tripwire: recompute the printed total from the parsed rows and a shifted column breaks the arithmetic immediately. Here the Lot column has been read as Quantity — a 100× error that would otherwise commit silently. Then a scan with no text layer, which fails earlier and more honestly.",
+    steps: [
+      ["Drop the good Stockbit TC", { type: "DROP", doc: DOCS.stockbit }],
+      ["Confirm the FUTR Trade", { type: "CONFIRM_TOP", stop: 320 }],
+      ["Drop the same TC, renamed (silent no-op)", { type: "DROP", doc: DOCS.stockbitRenamed }],
+      ["Drop the column-shifted TC", { type: "DROP", doc: DOCS.stockbitDrifted }],
+      ["Try to confirm it anyway", { type: "CONFIRM_TOP" }],
+      ["Drop the scanned PDF", { type: "DROP", doc: DOCS.corrupt }],
+    ],
+  },
+  {
+    name: "No bars & orphan exits",
+    blurb: "Two failures that must not behave alike. A symbol with no bar series still commits — the fills are facts — but enrichment is held for repair, never recorded as \"no data\". An exit with no journalled entry is the opposite: it blocks, because guessing an entry would poison every exit metric.",
+    steps: [
+      ["Drop the ZZZQ statement", { type: "DROP", doc: DOCS.stockbitUnknown }],
+      ["Confirm — commits, enrichment held", { type: "CONFIRM_TOP", stop: 1100 }],
+      ["Run the daily job (it does not retry blindly)", { type: "DAILY_JOB" }],
+      ["Teach it the real symbol as a rule", { type: "REMEMBER_SYMBOL", from: "ZZZQ", to: "FUTR" }],
+      ["Drop the AVGO sell nobody journalled", { type: "DROP", doc: DOCS.ibkrOrphan }],
+      ["Try to confirm the orphan exit", { type: "CONFIRM_TOP" }],
+      ["Enter the missing AVGO Trade by hand", { type: "MANUAL_ENTRY", book: "US", symbol: "AVGO", qty: 50, price: 240, daysAgo: 6 }],
+      ["Confirm it — note the parked exit did not block this", { type: "CONFIRM_TOP", stop: 228 }],
+      ["Re-check the parked items", { type: "RECHECK" }],
+      ["Confirm the exit that was orphaned", { type: "CONFIRM_TOP" }],
+    ],
+  },
+  {
+    name: "Hand entry, same door",
+    blurb: "Backdated entry is first-class, and the claim under test is that it needs no second surface: it produces a proposal like any import, is confirmed like any import, and differs only in that stop provenance reads \"reconstructed\" because the stop was recalled after the fact.",
+    steps: [
+      ["Enter a Trade from 8 days ago", { type: "MANUAL_ENTRY", book: "US", symbol: "TSLA", qty: 60, price: 305, daysAgo: 8 }],
+      ["Confirm it — note the provenance", { type: "CONFIRM_TOP", stop: 288, setup: "high_tight_flag" }],
+      ["Enter its exit by hand too", { type: "MANUAL_EXIT", price: 341, daysAgo: 2 }],
+      ["Confirm the exit", { type: "CONFIRM_TOP" }],
+      ["Skip 20 days and run the job", { type: "ADVANCE", days: 20 }],
+      ["Run the daily job → frozen", { type: "DAILY_JOB" }],
+    ],
+  },
+];
+
+// ── Wiring ──
+let state = FLOW.initial();
+let activeScenario = 0;
+let stepIndex = 0;
+let lastLogLen = 0;
+
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+function dispatch(action) {
+  state = FLOW.reduce(state, action);
+  render();
+}
+
+// Free-play buttons that need arguments get sensible defaults here.
+const FREE = {
+  ADVANCE_1: { type: "ADVANCE", days: 1 },
+  ADVANCE_20: { type: "ADVANCE", days: 20 },
+  DAILY_JOB: { type: "DAILY_JOB" },
+  CONFIRM_TOP: { type: "CONFIRM_TOP" },
+  CORRECT_QTY: { type: "CORRECT_QTY", qty: 200 },
+  REMEMBER_SYMBOL: { type: "REMEMBER_SYMBOL", from: "ZZZQ", to: "FUTR" },
+  OVERRIDE_FIFO: { type: "OVERRIDE_FIFO" },
+  ACK_DRIFT: { type: "ACK_DRIFT" },
+  RECHECK: { type: "RECHECK" },
+  DISCARD_TOP: { type: "DISCARD_TOP" },
+  MANUAL_ENTRY: { type: "MANUAL_ENTRY", book: "US", symbol: "TSLA", qty: 60, price: 305, daysAgo: 8 },
+  MANUAL_EXIT: { type: "MANUAL_EXIT", price: 341, daysAgo: 2 },
+  RESET: { type: "RESET" },
+};
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const act = b.dataset.act;
+  if (act === "RESET") { stepIndex = 0; }
+  dispatch(FREE[act]);
+});
+
+function renderDropButtons() {
+  $("dropBtns").innerHTML = Object.values(DOCS)
+    .map(d => `<button data-doc="${d.key}">${esc(d.label)}</button>`).join("");
+  $("dropBtns").querySelectorAll("button").forEach(b => {
+    b.onclick = () => dispatch({ type: "DROP", doc: DOCS[b.dataset.doc] });
+  });
+}
+
+function renderTabs() {
+  $("tabs").innerHTML = SCENARIOS
+    .map((s, i) => `<button class="${i === activeScenario ? "active" : ""}" data-tab="${i}">${esc(s.name)}</button>`).join("");
+  $("tabs").querySelectorAll("button").forEach(b => {
+    b.onclick = () => {
+      activeScenario = +b.dataset.tab;
+      stepIndex = 0;
+      state = FLOW.initial();
+      render();
+    };
+  });
+}
+
+function renderScenario() {
+  const sc = SCENARIOS[activeScenario];
+  const steps = sc.steps.map((st, i) => {
+    const cls = i < stepIndex ? "step done" : i === stepIndex ? "step primary" : "step";
+    return `<button class="${cls}" data-step="${i}">${i + 1}. ${esc(st[0])}</button>`;
+  }).join("");
+  $("scenario").innerHTML = `
+    <h3>${esc(sc.name)}</h3>
+    <p class="lede">${esc(sc.blurb)}</p>
+    <div style="margin-top:14px">${steps}</div>
+    ${stepIndex >= sc.steps.length ? '<p class="hint">Walkthrough complete — free-play from here, or switch tabs to reset.</p>' : ""}
+  `;
+  $("scenario").querySelectorAll("button[data-step]").forEach(b => {
+    b.onclick = () => {
+      const i = +b.dataset.step;
+      dispatchStep(i);
+    };
+  });
+}
+
+function dispatchStep(i) {
+  const sc = SCENARIOS[activeScenario];
+  state = FLOW.reduce(state, sc.steps[i][1]);
+  stepIndex = Math.max(stepIndex, i + 1);
+  render();
+}
+
+function rowsTable(rows) {
+  if (!rows || !rows.length) return "";
+  return `<table>
+    <tr><th>Broker ref</th><th>Date</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Cost</th></tr>
+    ${rows.map(r => `<tr><td>${esc(r.ref)}</td><td>${esc(r.date)}</td><td>${esc(r.side)}</td>
+      <td class="num">${r.qty.toLocaleString()}</td><td class="num">${r.price}</td><td class="num">${r.cost || "—"}</td></tr>`).join("")}
+  </table>`;
+}
+
+function renderQueue() {
+  const q = state.queue;
+  $("queueCount").textContent = q.length ? `${q.length} waiting` : "empty";
+  if (!q.length) { $("queue").innerHTML = '<div class="card"><span class="empty">Nothing waiting. Everything dropped in has been dealt with.</span></div>'; return; }
+
+  // Parked items sink to the bottom: they need something else to happen first,
+  // and they must not look like the next thing to confirm.
+  const ordered = [...q.filter(x => !x.blocked), ...q.filter(x => x.blocked)];
+  const firstActionable = ordered.findIndex(x => !x.blocked);
+  $("queue").innerHTML = ordered.map((i, idx) => {
+    const cls = i.blocked ? "item blocked" : i.attn ? "item attn" : "item";
+    const pill = i.blocked ? "pill bad" : i.attn ? "pill warn" : "pill";
+    const head = `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+        <span class="${pill}">${esc(i.kind.replace(/-/g, " "))}</span>
+        <span class="lede" style="font-size:12px">${i.blocked ? "parked — needs something else first" : idx === firstActionable ? "next to confirm" : `#${idx + 1}`}</span>
+      </div>`;
+
+    let body = "";
+    if (i.kind === "new-trade" || i.kind === "add-fills") {
+      body = `
+        <h3 style="margin-top:10px">${esc(i.symbol)} · ${esc(i.book)} · entered ${esc(i.entryDate)}</h3>
+        <dl class="kv">
+          <dt>Interpreted as</dt><dd>${i.kind === "add-fills" ? "more fills for a Trade already open" : "a new Trade"} — ${i.qty.toLocaleString()} shares @ ${i.avgPrice.toFixed(4)} avg</dd>
+          <dt>Notional</dt><dd>${FLOW.money(i.book, i.qty * i.avgPrice)} <span class="lede">· broker fees ${FLOW.money(i.book, i.cost)}</span></dd>
+          ${i.needs.length ? `<dt>Needs from you</dt><dd>${i.needs.join(" and ")}</dd>` : ""}
+          ${i.corrected ? `<dt>Corrected</dt><dd><mark class="change">${esc(i.corrected)}</mark></dd>` : ""}
+          ${i.barsMissing ? `<dt>Bars</dt><dd class="pill warn">no series for this symbol</dd>` : ""}
+        </dl>
+        ${i.note ? `<p class="hint">${esc(i.note)}</p>` : ""}
+        <details><summary>Show the raw broker rows</summary>${rowsTable(i.rows)}</details>`;
+    } else if (i.kind === "exit-allocation") {
+      body = `
+        <h3 style="margin-top:10px">Sell ${i.qty.toLocaleString()} ${esc(i.symbol)} @ ${i.price} on ${esc(i.date)}</h3>
+        <dl class="kv">
+          <dt>Allocated ${i.allocOverridden ? "(overridden)" : "FIFO"}</dt>
+          <dd>${i.alloc.map(a => `${a.qty.toLocaleString()} → Trade entered ${a.entryDate}`).join("<br>")}</dd>
+          <dt>Proposed reason</dt><dd>${esc(i.proposedReason)} <span class="lede">(confirm or override)</span></dd>
+          ${i.corrected ? `<dt>Corrected</dt><dd><mark class="change">${esc(i.corrected)}</mark></dd>` : ""}
+        </dl>
+        ${i.why ? `<p class="hint"><strong>${esc(i.why)}</strong> ${esc(i.remedy || "")}</p>` : ""}
+        ${i.note ? `<p class="hint">${esc(i.note)}</p>` : ""}
+        ${i.rows ? `<details><summary>Show the raw broker rows</summary>${rowsTable(i.rows)}</details>` : ""}`;
+    } else {
+      body = `
+        <h3 style="margin-top:10px">${esc(i.symbol || i.filename || "")}</h3>
+        <p style="font-size:13px;margin-bottom:6px">${esc(i.why)}</p>
+        ${i.before ? `<dl class="kv"><dt>Was</dt><dd>${i.before.qty} @ ${i.before.price}</dd><dt>Now</dt><dd><mark class="change">${i.after.qty} @ ${i.after.price}</mark></dd></dl>` : ""}
+        <p class="hint">${esc(i.remedy || "")}</p>`;
+    }
+    return `<div class="${cls}">${head}${body}</div>`;
+  }).join("");
+}
+
+function renderTrades() {
+  if (!state.trades.length) { $("trades").innerHTML = '<div class="card"><span class="empty">No Trades committed yet.</span></div>'; return; }
+  $("trades").innerHTML = state.trades.map(t => {
+    const statePill = t.state === "frozen" ? "pill good" : t.state === "closed" ? "pill mute" : "pill";
+    const e = t.enrichment || {};
+    return `<div class="item">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <h3>${esc(t.symbol)} · ${esc(t.book)} · ${esc(t.entryDate)}</h3>
+        <span class="${statePill}">${esc(t.state)}</span>
+      </div>
+      <dl class="kv" style="margin-top:8px">
+        <dt>Size</dt><dd>${t.qty.toLocaleString()} in, ${t.openQty.toLocaleString()} still open @ ${t.avgEntry}</dd>
+        <dt>Stop / setup</dt><dd>${t.stop} · ${esc(t.setup)} <span class="lede">(${esc(t.stopProvenance)})</span></dd>
+        ${t.exits.length ? `<dt>Exits</dt><dd>${t.exits.map(x => `${x.qty.toLocaleString()} @ ${x.price} on ${x.date} — ${esc(x.reason)}`).join("<br>")}</dd>` : ""}
+        ${t.realizedR != null ? `<dt>Realized R</dt><dd>${t.realizedR} <span class="lede">(P&amp;L ${FLOW.money(t.book, t.pnl)} after fees)</span></dd>` : ""}
+        <dt>Enrichment</dt><dd>
+          ${e.status === "needs-repair"
+            ? `<span class="pill warn">held for repair</span> <span class="lede">${esc(e.why)}</span>`
+            : `risk ${e.riskPct}%${e.riskFlag ? ' <span class="pill bad">over 1%</span>' : ""} · exposure ${e.exposurePct}% <span class="lede">as of ${esc(e.asOf || "—")}</span>
+               <br><span class="lede">rolling: ${esc(e.rolling || "—")}${e.postExit ? ` · post-exit: ${esc(e.postExit)}` : ""}</span>`}
+        </dd>
+        ${t.frozen ? `<dt>Snapshot</dt><dd>avg entry ${t.frozen.avgEntry}, R ${t.frozen.realizedR}, risk ${t.frozen.riskPct}% <span class="lede">frozen ${t.frozen.at}</span>${t.driftAcknowledged ? ' <span class="pill good">drift acknowledged</span>' : ""}</dd>` : ""}
+      </dl>
+    </div>`;
+  }).join("");
+}
+
+function renderMemory() {
+  $("memory").innerHTML = state.memory.length
+    ? `<table><tr><th>Source</th><th>Rule</th></tr>${state.memory.map(m =>
+        `<tr><td>${esc(m.source)}</td><td>map symbol <strong>${esc(m.from)}</strong> → <strong>${esc(m.to)}</strong></td></tr>`).join("")}</table>
+       <p class="hint">Rules apply before anything reaches the queue. The same misparse is never confirmed twice.</p>`
+    : '<span class="empty">No rules yet. Correct a symbol and choose to remember it.</span>';
+}
+
+function renderFills() {
+  $("fillCount").textContent = state.fills.length ? `${state.fills.length} rows` : "empty";
+  $("fills").innerHTML = state.fills.length
+    ? `<table><tr><th>Source ref</th><th class="num">Rev</th><th>Sym</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th>Status</th></tr>
+       ${state.fills.map(f => `<tr style="${f.superseded ? "opacity:.45" : ""}">
+         <td>${esc(f.sourceRef)}</td><td class="num">${f.revision}</td><td>${esc(f.symbol)}</td><td>${esc(f.side)}</td>
+         <td class="num">${f.qty.toLocaleString()}</td><td class="num">${f.price}</td>
+         <td>${f.superseded ? "superseded" : "live"}</td></tr>`).join("")}</table>`
+    : '<span class="empty">Nothing in the ledger. Fills land only on confirm.</span>';
+}
+
+function renderLog() {
+  const fresh = state.log.length - lastLogLen;
+  $("log").innerHTML = state.log.length
+    ? state.log.map((l, i) => `<div class="${l.kind}">${i < fresh ? "▸ " : "&nbsp;&nbsp;"}<span class="l-mute">${FLOW.dateOf(l.day)}</span> ${esc(l.msg)}</div>`).join("")
+    : '<span class="empty">Press something.</span>';
+  lastLogLen = state.log.length;
+}
+
+function render() {
+  $("clock").textContent = FLOW.dateOf(state.day);
+  $("clockNote").textContent = `trading day ${state.day} · freeze at ${FLOW.FREEZE_AFTER_DAYS} days past final exit`;
+  renderQueue(); renderTrades(); renderMemory(); renderFills(); renderScenario(); renderLog();
+}
+
+renderDropButtons();
+renderTabs();
+render();
+</script>
+</body>
+</html>
