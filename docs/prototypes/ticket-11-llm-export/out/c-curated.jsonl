@@ -1,0 +1,41 @@
+# Trading journal export — field legend
+
+Units. `_adr` fields are multiples of the symbol's Average Daily Range (its typical
+daily percent range), so a $400 US name and an IDR 7,200 IDX name are comparable.
+`_r` fields are multiples of the risk taken (entry to stop). `_pct` fields are
+percent. Prices are in the book's own currency and never converted.
+
+Anchors. Entry-dated geometry is as of the PRIOR trading day's close — the last bar
+that existed when the trade was decided. Exit geometry is as of the exit day's own
+close, because the exit rule is triggered by a close. This asymmetry is deliberate.
+
+Nulls. `null` means the value could not exist (not enough price history — a recent
+listing has no MA200), never that data is missing. `not_applicable` on an adherence
+field means the rule never got a chance to fire (stopped out before the partial
+window), which is NOT the same as a deviation.
+
+Caveats you must respect.
+- Trades with `stop_provenance: reconstructed` have a stop remembered after the
+  outcome was known. Exclude them from any conclusion about chasing, risk sizing,
+  or R. They are marked, not hidden.
+- The two books never aggregate. No FX, no combined equity curve. Compare within a
+  book, or compare normalized (`_adr`, `_r`) values across books.
+- There is no recorded plan. `setup` and `stop` are the only judgements the trader
+  entered; everything else is measured after the fact. Do not infer intent.
+
+Adherence. Every trade is scored against all six mechanical variants
+(trail {MA10, MA20} x partial {none, day 3, day 5}); `best_fit_variant` is the one
+the trade's behaviour most resembled, derived — not something the trader declared.
+`nominal_variant` is what the ruleset in force on the entry date called for.
+
+# Baseline context (computed over this export, so you need not re-derive it)
+
+US book: 2 trades, 1 win, avg R +0.71, avg hold 10.5 trading days.
+IDX book: 1 trade, 1 win, avg R +1.69, avg hold 14 trading days.
+R aggregates exclude 1 trade with a reconstructed stop (of 3 total).
+Ruleset in force throughout: v1 (partial 1/3 on days 3-5, then trail MA10).
+
+# One JSON object per trade. See legend above for units.
+{"id": "us-aaoi-20260420", "book": "US", "symbol": "AAOI", "entry_date": "2026-04-20", "exit_date": "2026-05-15", "days_held": 19, "setup": "base_breakout", "stop_provenance": "recorded", "realized_r": 2.5, "realized_pct": 24.78, "risk_pct_of_equity": 0.72, "exposure_pct_of_equity": 7.24, "stop_distance_adr": 2.14, "chased": true, "entry_regime": "strong_uptrend", "entry_ma_dist_10_adr": 1.18, "entry_ma_dist_50_adr": 3.58, "entry_ma_dist_200_adr": 5.99, "entry_stack": "aligned_up", "entry_move_63d_pct": 41.2, "entry_off_52w_high_pct": -3.1, "entry_rs_63d": 29.6, "entry_volume_ratio": 3.1, "adr_pct": 4.62, "exit_regime": "uptrend", "exit_ma_dist_10_adr": 1.44, "exit_ma_dist_50_adr": 5.02, "mfe_r": 3.63, "mfe_day": "2026-05-12", "mae_r": -0.39, "mae_day": "2026-04-21", "fwd_20d_pct": -8.2, "fwd_high_r": 2.94, "nominal_variant": "trail_ma10__partial_day3", "best_fit_variant": "trail_ma10__partial_day3", "partial_state": "taken_in_band", "trail_exit_delta_days": 0, "best_variant_r": 2.9, "exits": [{"d": "2026-04-23", "q": 400, "reason": "scheduled_partial", "r": 1.32}, {"d": "2026-05-06", "q": 300, "reason": "discretionary_trim", "r": 2.25}, {"d": "2026-05-15", "q": 500, "reason": "close_below_ma10", "r": 3.32}], "note": "Trailed it properly for once. Nearly trimmed the last third on the 12th when it went vertical — glad I didn't, the MA10 close came three days later."}
+{"id": "us-nvda-20260602", "book": "US", "symbol": "NVDA", "entry_date": "2026-06-02", "exit_date": "2026-06-03", "days_held": 2, "setup": "high_tight_flag", "stop_provenance": "recorded", "realized_r": -1.09, "realized_pct": -3.95, "risk_pct_of_equity": 0.9, "exposure_pct_of_equity": 24.99, "stop_distance_adr": 1.25, "chased": true, "entry_regime": "uptrend", "entry_ma_dist_10_adr": 0.74, "entry_ma_dist_50_adr": 2.64, "entry_ma_dist_200_adr": 6.68, "entry_stack": "aligned_up", "entry_move_63d_pct": 22.4, "entry_off_52w_high_pct": -1.2, "entry_rs_63d": 11.8, "entry_volume_ratio": 1.4, "adr_pct": 2.9, "exit_regime": "uptrend", "exit_ma_dist_10_adr": -0.31, "exit_ma_dist_50_adr": 1.62, "mfe_r": 0.3, "mfe_day": "2026-06-02", "mae_r": -1.3, "mae_day": "2026-06-03", "fwd_20d_pct": 14.6, "fwd_high_r": 3.19, "nominal_variant": "trail_ma10__partial_day3", "best_fit_variant": null, "partial_state": "not_applicable", "trail_exit_delta_days": null, "best_variant_r": -1.09, "exits": [{"d": "2026-06-03", "q": 600, "reason": "stop_hit", "r": -1.09}], "note": "Bought the flag on day two of the pullback instead of waiting for the range to tighten. Stop was under the low, it just went."}
+{"id": "idx-bren-20260707", "book": "IDX", "symbol": "BREN.JK", "entry_date": "2026-07-07", "exit_date": "2026-07-24", "days_held": 14, "setup": "other", "stop_provenance": "reconstructed", "realized_r": 1.69, "realized_pct": 7.94, "risk_pct_of_equity": 0.74, "exposure_pct_of_equity": 15.65, "stop_distance_adr": 1.24, "chased": null, "entry_regime": "uptrend", "entry_ma_dist_10_adr": 1.04, "entry_ma_dist_50_adr": 3.41, "entry_ma_dist_200_adr": null, "entry_stack": null, "entry_move_63d_pct": 26.9, "entry_off_52w_high_pct": null, "entry_rs_63d": 21.4, "entry_volume_ratio": 2.6, "adr_pct": 3.8, "exit_regime": "neutral", "exit_ma_dist_10_adr": 1.61, "exit_ma_dist_50_adr": 5.1, "mfe_r": 2.38, "mfe_day": "2026-07-22", "mae_r": -0.68, "mae_day": "2026-07-09", "fwd_20d_pct": null, "fwd_high_r": null, "nominal_variant": "trail_ma10__partial_day3", "best_fit_variant": "trail_ma10__partial_none", "partial_state": "missed", "trail_exit_delta_days": 0, "best_variant_r": 1.69, "exits": [{"d": "2026-07-24", "q": 40000, "reason": "close_below_ma10", "r": 1.69}], "note": "No stop written down at the time — reconstructed from where I remember putting it, under the 6900 shelf."}
