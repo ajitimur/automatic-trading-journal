@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -308,6 +308,32 @@ CREATE TABLE IF NOT EXISTS exit_excursion (
     mfe_date   TEXT,
     mae_low    REAL,
     mae_date   TEXT
+);
+
+-- The post-exit counterfactual window and its freeze snapshot (SPEC §7.5/§3.6,
+-- #34): 20 trading days after the final exit, baselined on C_x. Append-only per
+-- Trade — the freeze snapshot is revision 1, and a broker restatement adds a
+-- higher revision keeping the superseded one beside it (the Fill-ledger shape).
+-- get() reads the max revision; history() reads them all. `not_applicable` is 1
+-- for a written_off Trade, whose window is meaningless (SPEC §3.5); `cause` is
+-- NULL for the freeze snapshot and 'broker_restatement' for a restatement. A
+-- *revised bar series* is acknowledge-only drift and never lands here (SPEC §3.6).
+CREATE TABLE IF NOT EXISTS trade_post_exit (
+    trade_id        INTEGER NOT NULL REFERENCES trade(id),
+    revision        INTEGER NOT NULL DEFAULT 1,
+    final_exit_date TEXT NOT NULL,              -- the C_x date
+    cx              REAL,                        -- baseline close C_x
+    exit_avg_price  REAL,                        -- sits beside C_x; hand-entered if written off
+    fwd_return_20d  REAL,                        -- (C_20 / C_x − 1) × 100
+    fwd_close_20d   REAL,                        -- close on the 20th trading day
+    fwd_high        REAL,
+    fwd_high_date   TEXT,
+    fwd_low         REAL,
+    fwd_low_date    TEXT,
+    not_applicable  INTEGER NOT NULL DEFAULT 0,  -- 1 for a written_off Trade
+    cause           TEXT,                        -- NULL | 'broker_restatement'
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (trade_id, revision)
 );
 
 -- The keep-forever raw tier (SPEC §13.5, #31). Raw source documents as fetched

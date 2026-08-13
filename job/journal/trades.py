@@ -65,6 +65,7 @@ EXIT_REASONS = (
     "close_below_ma10",
     "close_below_ma20",
     "stop_hit",
+    "written_off",       # a delisting/suspension end — freezes immediately (SPEC §3.5, #34)
     "discretionary",
 )
 
