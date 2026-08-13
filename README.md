@@ -17,6 +17,12 @@ npm run job -- run                 # or: job/bin/journal run
 # execution row; re-dropping the same file is idempotent (SPEC §4.1).
 npm run job -- import docs/samples/ibkr-flex-schema-fixture.xml
 
+# Drop a hand-dropped Stockbit Trade Confirmation (PDF or its pdftotext -layout
+# text) into the ledger. One Fill per execution row, shares canonical from the
+# Quantity column. The fee identity is a document-level gate: a shifted column
+# quarantines the whole document with zero fills committed (SPEC §4.2, §5.6).
+npm run job -- drop docs/samples/stockbit-tc-fixture.txt
+
 # Fetch the same query unattended over the wire — DNS resolved over DoH per
 # host, interception caught by mismatch, error bodies surfaced not swallowed
 # (SPEC §13.3). Needs JOURNAL_SECRET_IBKR_FLEX_TOKEN and network.

@@ -8,4 +8,4 @@ headless job, which ``launchd`` invokes on schedule, and a TypeScript UI
 launched on demand. Nothing is resident — the store is a file, not a daemon.
 """
 
-__all__ = ["bars", "books", "cli", "db", "run", "secrets", "yfinance_adapter"]
+__all__ = ["bars", "books", "cli", "db", "run", "secrets", "stockbit", "yfinance_adapter"]

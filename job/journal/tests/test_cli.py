@@ -18,6 +18,8 @@ SAMPLES = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "docs", "samples"
 )
 FIXTURE = os.path.join(SAMPLES, "ibkr-flex-schema-fixture.xml")
+TC_FIXTURE = os.path.join(SAMPLES, "stockbit-tc-fixture.txt")
+TC_SHIFTED = os.path.join(SAMPLES, "stockbit-tc-column-shift-fixture.txt")
 
 
 class CliTest(unittest.TestCase):
@@ -67,6 +69,36 @@ class CliTest(unittest.TestCase):
         code, out = self._import()
         self.assertEqual(code, 0)
         self.assertIn("0", out)
+
+    def _drop(self, path):
+        buf, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(err):
+            code = main(["drop", path, "--db", self.db_path])
+        return code, buf.getvalue(), err.getvalue()
+
+    def test_drop_lands_a_tc_and_re_drop_is_a_noop(self):
+        code, out, _ = self._drop(TC_FIXTURE)
+        self.assertEqual(code, 0)
+        self.assertIn("9", out)
+
+        conn = db.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
+        conn.close()
+        self.assertEqual(count, 9)
+
+        code, out, _ = self._drop(TC_FIXTURE)
+        self.assertEqual(code, 0)
+        self.assertIn("0", out)
+
+    def test_drop_quarantines_a_column_shift_and_lands_zero_fills(self):
+        code, _out, err = self._drop(TC_SHIFTED)
+        self.assertEqual(code, 1)
+        self.assertIn("quarantined", err)
+
+        conn = db.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
+        conn.close()
+        self.assertEqual(count, 0)
 
     def _seed_buy(self):
         conn = db.connect(self.db_path)

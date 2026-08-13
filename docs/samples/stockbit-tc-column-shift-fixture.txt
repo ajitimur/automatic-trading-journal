@@ -1,0 +1,39 @@
+  PT. STOCKBIT SEKURITAS DIGITAL        PT. BIBIT TUMBUH BERSAMA
+
+  Trade Confirmation
+                                        Transaction Date    11/08/2026
+  To          <ACCOUNT> <CLIENT NAME>
+                                        Settlement Date     13/08/2026
+  Address     <ADDRESS>
+                                        Summary             -
+  NPWP/NIK    <ID>                      Sales               D55
+  Phone       <PHONE>
+
+  This is to confirm the following activity on your account:
+
+  REF #    Board  Share                                  Lot      Quantity      Price          Buy            Sell
+
+  0148504  RG     MEDC Medco Energi Internasional Tbk.   619        619.00   1,330.00   82,327,000.00         0.00
+  0477720  RG     ARTO Bank Jago Tbk.                    255        255.00   1,260.00            0.00  32,130,000.00
+  0477721  RG     BEEF Estika Tata Tiara Tbk.            472        472.00     416.00            0.00  19,635,200.00
+  0477722  RG     FUTR Futura Energi Global Tbk.         218        218.00     346.00            0.00   7,542,800.00
+  0477722  RG     FUTR Futura Energi Global Tbk.         282        282.00     348.00            0.00   9,813,600.00
+  0477722  RG     FUTR Futura Energi Global Tbk.         492        492.00     358.00            0.00  17,613,600.00
+  0477723  RG     NEST Esta Indonesia Tbk.               903        903.00     705.00            0.00  63,661,500.00
+  0477724  RG     PTRO Petrosea Tbk.                     128        128.00   4,940.00            0.00  63,232,000.00
+  0477725  RG     SOCI Soechi Lines Tbk.                 390        390.00     482.00            0.00  18,798,000.00
+
+                                              Buy               Sell
+  Total Value                        82,327,000.00     232,426,700.00
+  Total Fee : 0.1500 % All In
+  Commission                              79,137.76         223,422.78
+  V.A.T Commission                         8,705.15          24,576.51
+  IDX Fee                                 32,930.80          92,970.68
+  V.A.T Levy                               2,716.79           7,670.08
+  Income Tax                                       0         232,426.70
+  Stamp Duty                              10,000.00                  0
+  Total Cost                         82,460,490.50     231,845,633.25
+  Payment due to you IDR                      0.00     149,385,142.75
+
+  NG, RG, TN = Bursa Efek (on-exchange)
+  UH         = Di luar Bursa Efek (off-exchange)

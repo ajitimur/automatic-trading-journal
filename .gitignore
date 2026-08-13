@@ -3,6 +3,9 @@
 # See docs/samples/equity-sources-findings.md.
 TC_*.pdf
 *_soa*.pdf
+# Belt-and-braces: no raw PDF (Stockbit TC or otherwise) ever enters the repo.
+# Only redacted, extracted-text derivatives belong in docs/samples (SPEC §4.2).
+*.pdf
 ibkr-flex.xml
 ibkr-nav.xml
 .env

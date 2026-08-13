@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable
 
-from . import flex
+from . import flex, stockbit
 
 _INSERT = """
 INSERT OR IGNORE INTO fill
@@ -69,3 +69,31 @@ def import_flex_file(conn: sqlite3.Connection, path: str) -> int:
     """
     with open(path, encoding="utf-8") as fh:
         return import_flex_text(conn, fh.read())
+
+
+def import_stockbit_text(conn: sqlite3.Connection, tc_text: str) -> int:
+    """Parse a Stockbit TC's extracted text and append its Fills (issue #26).
+
+    The fee-identity gate runs inside :func:`stockbit.parse_tc_text`, so a
+    document that does not reconcile raises :class:`stockbit.QuarantineError`
+    before any row is returned — nothing lands. Returns the number newly
+    inserted; the content-hash ``source_ref`` makes re-dropping the same TC a
+    no-op (SPEC §4.2).
+    """
+    return insert_fills(conn, stockbit.parse_tc_text(tc_text))
+
+
+def import_stockbit_file(conn: sqlite3.Connection, path: str) -> int:
+    """Import a hand-dropped Stockbit TC, from a PDF or its extracted text.
+
+    A ``.pdf`` is run through ``pdftotext -layout`` first (the one place this
+    module touches the raw document); a ``.txt`` is taken as already-extracted
+    layout text, which is what the tests and the offline path use. The raw PDF
+    itself is never copied into the repo (SPEC §4.2, §13.2).
+    """
+    if path.lower().endswith(".pdf"):
+        text = stockbit.extract_text(path)
+    else:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    return import_stockbit_text(conn, text)

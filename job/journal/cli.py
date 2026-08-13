@@ -10,7 +10,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from . import db, fills, flex, flex_client, secrets, trades
+from . import db, fills, flex, flex_client, secrets, stockbit, trades
 from .run import RunResult, execute_run
 
 
@@ -58,6 +58,27 @@ def cmd_import(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(f"imported {inserted} new fill(s) from {args.file}  ({total} in ledger)")
+    return 0
+
+
+def cmd_drop(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        inserted = fills.import_stockbit_file(conn, args.file)
+        total = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
+    except stockbit.QuarantineError as exc:
+        # The fee identity is a document-level gate (SPEC §5.6): a mismatch
+        # quarantines the WHOLE document with zero fills committed. Surface it
+        # loudly and exit non-zero — a shifted column must not land silently.
+        print(f"quarantined — nothing committed: {exc}", file=sys.stderr)
+        return 1
+    except stockbit.StockbitError as exc:
+        print(f"drop failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"dropped {inserted} new fill(s) from {args.file}  ({total} in ledger)")
     return 0
 
 
@@ -170,6 +191,16 @@ def build_parser() -> argparse.ArgumentParser:
     import_p.add_argument("file", help="path to the Flex XML file on disk")
     _add_db_argument(import_p)
     import_p.set_defaults(func=cmd_import)
+
+    drop_p = sub.add_parser(
+        "drop",
+        help="parse a Stockbit Trade Confirmation (PDF or extracted text) into the Fill ledger",
+    )
+    drop_p.add_argument(
+        "file", help="path to the TC PDF (or its pdftotext -layout text)"
+    )
+    _add_db_argument(drop_p)
+    drop_p.set_defaults(func=cmd_drop)
 
     confirm_p = sub.add_parser(
         "confirm",
