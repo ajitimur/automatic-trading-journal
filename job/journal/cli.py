@@ -61,6 +61,15 @@ def cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_db_argument(subparser: argparse.ArgumentParser) -> None:
+    # Both subcommands take the same store path; keep the one help string here.
+    subparser.add_argument(
+        "--db",
+        default=None,
+        help="path to the SQLite store (default: $JOURNAL_DB or ~/.automatic-trading-journal/journal.db)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="journal",
@@ -69,11 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_p = sub.add_parser("run", help="advance each book and write a run record")
-    run_p.add_argument(
-        "--db",
-        default=None,
-        help="path to the SQLite store (default: $JOURNAL_DB or ~/.automatic-trading-journal/journal.db)",
-    )
+    _add_db_argument(run_p)
     run_p.add_argument(
         "--as-of",
         default=None,
@@ -86,11 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
         "import", help="parse an IBKR Flex XML file into the Fill ledger"
     )
     import_p.add_argument("file", help="path to the Flex XML file on disk")
-    import_p.add_argument(
-        "--db",
-        default=None,
-        help="path to the SQLite store (default: $JOURNAL_DB or ~/.automatic-trading-journal/journal.db)",
-    )
+    _add_db_argument(import_p)
     import_p.set_defaults(func=cmd_import)
     return parser
 
