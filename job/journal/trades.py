@@ -62,7 +62,6 @@ class _Lot:
     symbol: str
     entry_date: str
     open_qty: float
-    committed: bool
 
 
 @dataclass(frozen=True)
@@ -126,7 +125,6 @@ def _committed_lots(conn: sqlite3.Connection) -> Tuple[List[_Lot], Dict[Tuple[st
                 symbol=t["symbol"],
                 entry_date=t["entry_date"],
                 open_qty=t["entry_qty"] - t["allocated"],
-                committed=True,
             )
         )
     return lots, ids
@@ -251,9 +249,9 @@ def propose(conn: sqlite3.Connection) -> List[Proposal]:
 
     # Sells allocate across committed-open lots *and* the cohorts we are about to
     # propose — so an entry and its exit dropped together allocate cleanly.
-    lots = [_Lot(l.book, l.symbol, l.entry_date, l.open_qty, l.committed) for l in committed_lots]
+    lots = [_Lot(l.book, l.symbol, l.entry_date, l.open_qty) for l in committed_lots]
     for nt in new_trades:
-        lots.append(_Lot(nt.book, nt.symbol, nt.entry_date or "", nt.quantity, committed=False))
+        lots.append(_Lot(nt.book, nt.symbol, nt.entry_date or "", nt.quantity))
     lots.sort(key=lambda l: (l.book, l.symbol, l.entry_date))
 
     exits: List[Proposal] = []
