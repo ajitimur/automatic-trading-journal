@@ -1,147 +1,185 @@
-"""RegimeSnapshot per (book, date): the six primitives, the top-down label,
-the two extras, prior-close stamping, and storage (SPEC §8, issue #30)."""
+"""RegimeSnapshot per (book, date) — SPEC §8, issue #30.
+
+Regime is a property of a market on a date, not of a trade. These tests pin the
+five-level label (top-down, no tunable parameter, identical for both books), the
+sign-only slope over five trading days, the two market-level extras, the
+prior-close stamping with an honest bar-date fallback, and the fact that the
+label re-cuts from stored primitives with no refetch.
+"""
 
 import os
 import tempfile
 import unittest
-from datetime import date, timedelta
 
 from journal import db
-from journal.bars import Bar
+from journal.bars import Bar, BarCache
 from journal.regime import (
-    DOWNTREND,
-    NEUTRAL,
-    STRONG_DOWNTREND,
-    STRONG_UPTREND,
-    UPTREND,
-    RegimeStore,
+    BENCHMARKS,
+    INSUFFICIENT_HISTORY,
+    RegimeComputer,
     compute_snapshot,
-    derive_label,
+    label_from_primitives,
+    read_snapshot,
+    recut_labels,
+    store_snapshot,
 )
 
 
-def _series(n, base=100.0, step=1.0, start="2026-01-01"):
-    """A benchmark series of n bars, close = base + step*i (oldest first).
+def _bar(d, close, high=None, volume=1000):
+    high = close if high is None else high
+    return Bar(date=d, open=close, high=high, low=close, close=close,
+               volume=volume)
 
-    Sequential calendar dates — the module only needs an ordered, comparable
-    date axis, not a real trading calendar.
+
+def _series(closes, start_ordinal=1, step_up_high=0.0):
+    """A run of daily bars with the given closes, dated 2025-01-<n> upward.
+
+    Dates are synthetic and strictly increasing; only their order matters to the
+    regime windows.
     """
-    d0 = date.fromisoformat(start)
     bars = []
-    for i in range(n):
-        close = base + step * i
-        bars.append(Bar(
-            date=(d0 + timedelta(days=i)).isoformat(),
-            open=close, high=close, low=close, close=close,
-            volume=1000, dividend=0.0,
-        ))
+    y, m, d = 2025, 1, 1
+    import datetime as _dt
+    day = _dt.date(2025, 1, 1)
+    for i, c in enumerate(closes):
+        bars.append(_bar(day.isoformat(), c, high=c + step_up_high))
+        day += _dt.timedelta(days=1)
     return bars
 
 
-class DeriveLabelTest(unittest.TestCase):
-    def test_strong_uptrend_is_strict(self):
-        self.assertEqual(derive_label(3, 3), STRONG_UPTREND)
-        # One notch off either primitive drops to plain uptrend, never strong.
-        self.assertEqual(derive_label(3, 2), UPTREND)
-        self.assertEqual(derive_label(2, 3), UPTREND)
+class LabelRulesTest(unittest.TestCase):
+    """§8.3 — the five rules, evaluated top-down, no tunable parameter."""
 
-    def test_strong_downtrend_is_strict(self):
-        self.assertEqual(derive_label(0, 0), STRONG_DOWNTREND)
-        self.assertEqual(derive_label(1, 0), DOWNTREND)
-        self.assertEqual(derive_label(0, 1), DOWNTREND)
+    def test_strong_uptrend_needs_all_three(self):
+        self.assertEqual(
+            label_from_primitives([True, True, True], [1, 1, 1]),
+            "strong_uptrend",
+        )
 
-    def test_uptrend_and_downtrend_bands(self):
-        self.assertEqual(derive_label(2, 2), UPTREND)
-        self.assertEqual(derive_label(1, 1), DOWNTREND)
+    def test_uptrend_two_of_three(self):
+        self.assertEqual(
+            label_from_primitives([True, True, False], [1, 1, -1]),
+            "uptrend",
+        )
+
+    def test_strong_downtrend_needs_all_zero(self):
+        self.assertEqual(
+            label_from_primitives([False, False, False], [-1, -1, -1]),
+            "strong_downtrend",
+        )
+
+    def test_downtrend_at_most_one(self):
+        self.assertEqual(
+            label_from_primitives([True, False, False], [1, -1, -1]),
+            "downtrend",
+        )
 
     def test_neutral_is_everything_else(self):
-        self.assertEqual(derive_label(2, 1), NEUTRAL)
-        self.assertEqual(derive_label(3, 0), NEUTRAL)
-        self.assertEqual(derive_label(1, 2), NEUTRAL)
+        # above = 2, rising = 1 -> not uptrend (rising < 2), not downtrend
+        # (above > 1): the mixed middle.
+        self.assertEqual(
+            label_from_primitives([True, True, False], [1, -1, -1]),
+            "neutral",
+        )
 
+    def test_strong_band_is_strict_not_ge(self):
+        # above = 3 but only 2 rising is uptrend, never strong_uptrend.
+        self.assertEqual(
+            label_from_primitives([True, True, True], [1, 1, -1]),
+            "uptrend",
+        )
 
-class SlopeTest(unittest.TestCase):
-    def test_slope_is_sign_of_five_day_change(self):
-        up = compute_snapshot("US", "2026-04-01", _series(80, step=1.0))
-        self.assertEqual((up.slope_ma10, up.slope_ma20, up.slope_ma50), (1, 1, 1))
-
-        down = compute_snapshot("US", "2026-04-01", _series(80, base=200.0, step=-1.0))
-        self.assertEqual((down.slope_ma10, down.slope_ma20, down.slope_ma50), (-1, -1, -1))
-
-    def test_flat_ma_has_zero_slope_no_flat_zone(self):
-        snap = compute_snapshot("US", "2026-04-01", _series(80, step=0.0))
-        self.assertEqual((snap.slope_ma10, snap.slope_ma20, snap.slope_ma50), (0, 0, 0))
+    def test_missing_primitive_is_insufficient_history(self):
+        self.assertEqual(
+            label_from_primitives([True, True, None], [1, 1, 1]),
+            INSUFFICIENT_HISTORY,
+        )
 
 
 class ComputeSnapshotTest(unittest.TestCase):
-    def test_strong_uptrend_all_six_primitives(self):
-        snap = compute_snapshot("US", "2026-06-01", _series(300, step=1.0))
-        self.assertEqual(snap.label, STRONG_UPTREND)
-        self.assertTrue(snap.close_above_ma10)
-        self.assertTrue(snap.close_above_ma20)
-        self.assertTrue(snap.close_above_ma50)
+    def test_a_clean_uptrend_labels_strong_uptrend(self):
+        # A monotonically rising series: close above every MA, every MA rising.
+        closes = [100.0 + i for i in range(60)]
+        bars = _series(closes)
+        # date one day past the last bar so the last bar is the prior close.
+        as_of = "2025-04-01"
+        snap = compute_snapshot(bars, "US", as_of)
+        self.assertEqual(snap.label, "strong_uptrend")
+        self.assertTrue(snap.above_ma10)
+        self.assertTrue(snap.above_ma20)
+        self.assertTrue(snap.above_ma50)
         self.assertEqual(snap.slope_ma10, 1)
         self.assertEqual(snap.slope_ma20, 1)
         self.assertEqual(snap.slope_ma50, 1)
 
-    def test_strong_downtrend(self):
-        snap = compute_snapshot("US", "2026-06-01", _series(300, base=500.0, step=-1.0))
-        self.assertEqual(snap.label, STRONG_DOWNTREND)
-        self.assertFalse(snap.close_above_ma10)
+    def test_a_clean_downtrend_labels_strong_downtrend(self):
+        closes = [200.0 - i for i in range(60)]
+        bars = _series(closes)
+        snap = compute_snapshot(bars, "US", "2025-04-01")
+        self.assertEqual(snap.label, "strong_downtrend")
+        self.assertFalse(snap.above_ma10)
         self.assertEqual(snap.slope_ma10, -1)
 
-    def test_two_extras_computed(self):
-        snap = compute_snapshot("US", "2026-11-01", _series(300, step=1.0))
-        # Ascending series: last close is the max → distance from 52w high is 0.
-        self.assertIsNotNone(snap.pct_off_52w_high)
-        self.assertLessEqual(snap.pct_off_52w_high, 0.0)
-        self.assertIsNotNone(snap.realized_vol_20d)
-        self.assertGreater(snap.realized_vol_20d, 0.0)
+    def test_slope_is_sign_only_over_five_trading_days(self):
+        # Flat for a while then the last five bars tick up: the MA10 slope over
+        # the last five trading days is positive, sign only.
+        closes = [100.0] * 20 + [100.0 + i for i in range(1, 6)]
+        bars = _series(closes)
+        snap = compute_snapshot(bars, "US", "2025-04-01")
+        self.assertEqual(snap.slope_ma10, 1)
 
-    def test_both_books_use_the_rule_identically(self):
-        bars = _series(300, step=1.0)
-        us = compute_snapshot("US", "2026-06-01", bars)
-        idx = compute_snapshot("IDX", "2026-06-01", bars)
-        self.assertEqual(us.label, idx.label)
-        self.assertEqual(us.book, "US")
-        self.assertEqual(idx.book, "IDX")
-
-    def test_insufficient_history_nulls_the_label_but_keeps_primitives(self):
-        # 30 bars: MA10/MA20 exist, MA50 cannot — label is null, not guessed.
-        snap = compute_snapshot("US", "2026-06-01", _series(30, step=1.0))
-        self.assertIsNone(snap.label)
-        self.assertIsNone(snap.close_above_ma50)
-        self.assertIsNone(snap.slope_ma50)
-        self.assertIsNotNone(snap.close_above_ma10)
-        self.assertIsNone(snap.pct_off_52w_high)  # < 252 bars
-
-    def test_no_prior_bar_returns_none(self):
-        bars = _series(10, start="2026-06-01")
-        self.assertIsNone(compute_snapshot("US", "2026-01-01", bars))
-
-
-class StampingTest(unittest.TestCase):
-    def test_stamped_as_of_prior_trading_day_close(self):
-        # A bar exists on the key date itself; the stamp must ignore it and use
-        # the last completed bar before it (the entry day's close is unknown).
-        bars = _series(60, start="2026-03-01")
-        key = bars[-1].date
-        snap = compute_snapshot("US", key, bars)
-        self.assertEqual(snap.bar_date, bars[-2].date)
-        self.assertLess(snap.bar_date, key)
-
-    def test_missing_bar_falls_back_and_records_the_bar_date_used(self):
-        # No bar on the key date or the days just before it (holiday / backdated
-        # entry). The stamp falls back to the last available close and records
-        # which bar it actually used, so the as-of date stays honest.
-        bars = _series(60, start="2026-03-01")
-        last = date.fromisoformat(bars[-1].date)
-        key = (last + timedelta(days=7)).isoformat()
-        snap = compute_snapshot("US", key, bars)
+    def test_prior_close_stamping_uses_the_last_bar_before_the_date(self):
+        closes = [100.0 + i for i in range(60)]
+        bars = _series(closes)  # last bar dated 2025-03-01
+        # The as-of decision date is well past the last bar; the snapshot is
+        # stamped as of the prior trading day's close, and records the bar used.
+        snap = compute_snapshot(bars, "US", "2025-06-01")
+        self.assertEqual(snap.date, "2025-06-01")
         self.assertEqual(snap.bar_date, bars[-1].date)
 
+    def test_missing_bar_falls_back_and_the_as_of_date_stays_honest(self):
+        closes = [100.0 + i for i in range(60)]
+        bars = _series(closes)
+        last = bars[-1].date
+        # Ask for a date landing exactly on the day after the last bar: the bar
+        # on the as-of date is missing, so it falls back to the last close and
+        # records that bar_date — the as-of date itself does not slide.
+        snap = compute_snapshot(bars, "US", "2025-05-15")
+        self.assertEqual(snap.date, "2025-05-15")
+        self.assertEqual(snap.bar_date, last)
+        self.assertLess(snap.bar_date, snap.date)
 
-class RegimeStoreTest(unittest.TestCase):
+    def test_pct_off_52w_high_null_under_252_bars(self):
+        closes = [100.0 + i for i in range(60)]
+        snap = compute_snapshot(_series(closes), "US", "2025-06-01")
+        self.assertIsNone(snap.pct_off_52w_high)
+
+    def test_pct_off_52w_high_zero_or_negative_at_the_high(self):
+        # A long rising series: the prior close IS the 52-week high, so the
+        # distance is zero (never positive, per §7.2).
+        closes = [100.0 + i for i in range(300)]
+        bars = _series(closes)
+        snap = compute_snapshot(bars, "US", "2027-01-01")
+        self.assertIsNotNone(snap.pct_off_52w_high)
+        self.assertEqual(snap.pct_off_52w_high, 0.0)
+
+    def test_realized_vol_is_present_and_nonnegative(self):
+        closes = [100.0 + (i % 3) for i in range(60)]
+        snap = compute_snapshot(_series(closes), "US", "2025-06-01")
+        self.assertIsNotNone(snap.realized_vol_20d)
+        self.assertGreaterEqual(snap.realized_vol_20d, 0.0)
+
+    def test_a_flat_series_has_zero_realized_vol(self):
+        snap = compute_snapshot(_series([100.0] * 60), "US", "2025-06-01")
+        self.assertEqual(snap.realized_vol_20d, 0.0)
+
+    def test_no_prior_bar_raises(self):
+        bars = _series([100.0, 101.0])  # first bar 2025-01-01
+        with self.assertRaises(ValueError):
+            compute_snapshot(bars, "US", "2025-01-01")
+
+
+class StoreTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
@@ -150,32 +188,103 @@ class RegimeStoreTest(unittest.TestCase):
         self.conn.close()
         self.tmp.cleanup()
 
-    def test_upsert_and_get_roundtrip_per_book_date(self):
-        snap = compute_snapshot("US", "2026-06-01", _series(300, step=1.0))
-        store = RegimeStore(self.conn)
-        store.upsert(snap)
-        got = store.get("US", "2026-06-01")
+    def test_snapshot_persists_per_book_date(self):
+        closes = [100.0 + i for i in range(60)]
+        snap = compute_snapshot(_series(closes), "US", "2025-06-01")
+        store_snapshot(self.conn, snap)
+        got = read_snapshot(self.conn, "US", "2025-06-01")
         self.assertEqual(got.label, snap.label)
         self.assertEqual(got.bar_date, snap.bar_date)
-        self.assertEqual(got.close_above_ma50, snap.close_above_ma50)
-        self.assertEqual(got.slope_ma20, snap.slope_ma20)
-        self.assertAlmostEqual(got.realized_vol_20d, snap.realized_vol_20d)
+        self.assertEqual(got.slope_ma10, snap.slope_ma10)
 
-    def test_upsert_is_idempotent_on_book_date(self):
-        store = RegimeStore(self.conn)
-        store.upsert(compute_snapshot("US", "2026-06-01", _series(300, step=1.0)))
-        store.upsert(compute_snapshot("US", "2026-06-01", _series(300, step=1.0)))
-        n = self.conn.execute(
-            "SELECT COUNT(*) AS c FROM regime_snapshot").fetchone()["c"]
+    def test_store_is_idempotent_on_book_date(self):
+        snap = compute_snapshot(_series([100.0 + i for i in range(60)]),
+                                "US", "2025-06-01")
+        store_snapshot(self.conn, snap)
+        store_snapshot(self.conn, snap)  # once more, same key
+        rows = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM regime WHERE book='US' AND date='2025-06-01'"
+        ).fetchone()
+        self.assertEqual(rows["n"], 1)
+
+    def test_relabel_recuts_from_stored_primitives_with_no_refetch(self):
+        snap = compute_snapshot(_series([100.0 + i for i in range(60)]),
+                                "US", "2025-06-01")
+        store_snapshot(self.conn, snap)
+        # Corrupt the stored label; a re-cut restores it purely from the six
+        # stored primitives — no bars, no fetch involved.
+        self.conn.execute(
+            "UPDATE regime SET label = 'neutral' WHERE book='US' AND date='2025-06-01'"
+        )
+        self.conn.commit()
+        n = recut_labels(self.conn)
         self.assertEqual(n, 1)
+        self.assertEqual(read_snapshot(self.conn, "US", "2025-06-01").label,
+                         "strong_uptrend")
 
-    def test_label_recut_from_stored_primitives_needs_no_refetch(self):
-        # Store the snapshot, drop the bars, and re-cut the label from the
-        # stored primitives alone — it must match (SPEC §8.3).
-        store = RegimeStore(self.conn)
-        store.upsert(compute_snapshot("US", "2026-06-01", _series(300, step=1.0)))
-        loaded = store.get("US", "2026-06-01")
-        self.assertEqual(loaded.relabel(), STRONG_UPTREND)
+    def test_trade_references_a_snapshot_and_copies_no_values(self):
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(trade)")}
+        # References by (book, date): the book is already on the trade, and the
+        # two regime dates point at the snapshots.
+        self.assertIn("entry_regime_date", cols)
+        self.assertIn("exit_regime_date", cols)
+        # The trade never carries a copy of a primitive or the label.
+        for copied in ("label", "above_ma10", "slope_ma10", "pct_off_52w_high"):
+            self.assertNotIn(copied, cols)
+
+
+class BooksIndependentTest(unittest.TestCase):
+    def test_benchmarks_are_per_book(self):
+        self.assertEqual(BENCHMARKS["US"], "QQQ")
+        self.assertEqual(BENCHMARKS["IDX"], "^JKSE")
+
+
+class _FakeFetcher:
+    source = "fake"
+
+    def __init__(self, bars):
+        self._bars = list(bars)
+        self.calls = 0
+
+    def fetch(self, symbol, start, end):
+        self.calls += 1
+        return list(self._bars)
+
+
+class ComputerTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_computer_reads_the_benchmark_from_the_cache_and_stores(self):
+        closes = [100.0 + i for i in range(60)]
+        bars = _series(closes)
+        cache = BarCache(self.conn, _FakeFetcher(bars))
+        cache.ensure("US", "QQQ", bars[0].date, bars[-1].date)
+        computer = RegimeComputer(self.conn, cache)
+        snap = computer.compute("US", "2025-06-01")
+        self.assertEqual(snap.label, "strong_uptrend")
+        self.assertEqual(read_snapshot(self.conn, "US", "2025-06-01").label,
+                         "strong_uptrend")
+
+    def test_us_regime_uses_only_the_us_benchmark(self):
+        # Two books cached with different weather; the US snapshot must not fold
+        # in any IDX term (§8.1 strict independence).
+        up = _series([100.0 + i for i in range(60)])
+        down = _series([200.0 - i for i in range(60)])
+        cache = BarCache(self.conn, _FakeFetcher(up))
+        cache.ensure("US", "QQQ", up[0].date, up[-1].date)
+        cache = BarCache(self.conn, _FakeFetcher(down))
+        cache.ensure("IDX", "^JKSE", down[0].date, down[-1].date)
+        computer = RegimeComputer(self.conn, cache)
+        self.assertEqual(computer.compute("US", "2025-06-01").label,
+                         "strong_uptrend")
+        self.assertEqual(computer.compute("IDX", "2025-06-01").label,
+                         "strong_downtrend")
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 from .bars import Bar
 
@@ -148,7 +148,9 @@ def compute_snapshot(
     )
 
 
-def _label_from_primitives(above_flags, slope_signs) -> Optional[str]:
+def _label_from_primitives(
+    above_flags: Sequence[Optional[bool]], slope_signs: Sequence[Optional[int]]
+) -> Optional[str]:
     """Derive the label from the six primitives, or ``None`` if any is missing.
 
     The label needs all six; a missing MA50 (insufficient history) leaves it
