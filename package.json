@@ -1,0 +1,22 @@
+{
+  "name": "automatic-trading-journal",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Walking skeleton: one SQLite file, an idempotent CLI, a localhost page.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run test:py && npm run test:ui",
+    "test:py": "cd job && python3 -m unittest discover -s . -p 'test_*.py'",
+    "test:ui": "node --test 'ui/tests/**/*.test.ts'",
+    "job": "cd job && PYTHONPATH=. python3 -m journal",
+    "ui": "node ui/src/server.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

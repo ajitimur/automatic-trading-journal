@@ -2,7 +2,25 @@
 
 A personal journal for momentum swing trades across two markets — US equities via IBKR and Indonesian equities via Stockbit. It records what was executed, enriches it from daily bars, grades it against a mechanical strategy, and exports it for analysis by an LLM.
 
-**Not built yet.** This repository currently holds the locked specification and the research, samples and prototypes it was built from.
+**Being built.** The repository holds the locked specification and the research, samples and prototypes it was built from — and now the **walking skeleton**: the thinnest complete path through the system, with no domain logic yet.
+
+## Running the walking skeleton
+
+Two independent entry points over one SQLite file ([SPEC §13.6](SPEC.md#136-observability-access-and-shape)), nothing resident:
+
+```sh
+# The daily job — a plain idempotent CLI. Creates the file, writes a run
+# record, advances each book. Running it twice is a visible no-op.
+npm run job -- run                 # or: job/bin/journal run
+
+# The localhost UI — reads the same file, renders "no Trades yet" and the
+# latest run record. Ctrl-C to exit.
+JOURNAL_DB=job/journal.db npm run ui
+
+npm run typecheck && npm test      # TypeScript UI + Python job
+```
+
+See [`docs/adr/0007-walking-skeleton-stack.md`](docs/adr/0007-walking-skeleton-stack.md) for the stack decision and [`deploy/`](deploy/) for the `launchd` job.
 
 ## Start here
 

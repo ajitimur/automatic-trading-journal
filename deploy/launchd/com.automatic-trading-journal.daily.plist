@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd merely *calls* the plain `journal run` command (SPEC §13.7 seam 1);
+  the job itself is portable and knows nothing of launchd. Replace the
+  __PLACEHOLDER__ paths at install time.
+
+  StandardOutPath / StandardErrorPath keep a plain log file for the case where
+  the app itself will not start (SPEC §13.6) — the run record in the DB cannot
+  cover a run that never opened the DB.
+
+  StartCalendarInterval fires ~06:00 (one daily run, both book passes, SPEC
+  §13.3); a job whose window passed while the machine slept fires on wake.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.automatic-trading-journal.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/job/bin/journal</string>
+        <string>run</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- The store location and the one secret both resolve through
+             indirection (SPEC §13.4, §13.7); nothing is hardcoded in the job. -->
+        <key>JOURNAL_DB</key>
+        <string>__DATA__/journal.db</string>
+        <key>JOURNAL_SECRET_IBKR_FLEX_TOKEN</key>
+        <string>__SET_AT_INSTALL__</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__DATA__/logs/journal.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DATA__/logs/journal.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

@@ -13,3 +13,13 @@ ibkr-flex-sample.xml
 .claude/settings.local.json
 .claude/worktrees/
 .claude/skills/
+
+# Build skeleton
+node_modules/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+deploy/**/logs/
+__pycache__/
+*.pyc
