@@ -75,6 +75,15 @@ npm run job -- equity-idx --file month-end-series.csv
 # `estimated` snapshot still computes and flags but is excluded too.
 npm run job -- risk               # every book; --book US|IDX to limit
 
+# The counterfactual and adherence engine (SPEC §10). Adherence is inverted: the
+# engine scores every *closed* Trade against all six variants (trail {ma10,ma20}
+# × partial {none,day3,day5}) with the recorded stop as a hard leg, and stores
+# signed deltas against the nominal variant — never a verdict. Best fit derives
+# at read time from the stored six-way trading-day distance vector; a Trade
+# stopped out before the band is not_applicable, the 60-day cap nulls its deltas
+# without fabricating an exit, and no-stop Trades run trail-only and are flagged.
+npm run job -- counterfactual     # every book; --book US|IDX to limit
+
 # Durability (SPEC §13.5). Every successful `run` leaves a timestamped
 # `VACUUM INTO` snapshot under rolling retention, plus an off-machine copy when
 # $JOURNAL_OFFSITE_DIR is set (at least one copy off this machine). Raw source

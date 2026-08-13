@@ -402,5 +402,54 @@ class CliTest(unittest.TestCase):
         self.assertIn("1 stale", out)
 
 
+    def test_counterfactual_scores_closed_trades_and_stores_them(self):
+        from datetime import date, timedelta
+
+        conn = db.connect(self.db_path)
+        # A closed IDX Trade with a recorded stop, and its symbol's bar series so
+        # the engine can seat the trail MA and simulate all six variants.
+        d0 = date.fromisoformat("2026-07-01")
+        closes = [100, 101, 102, 103, 104, 105] + [106] * 20
+        rows = []
+        for i, c in enumerate(closes):
+            day = (d0 + timedelta(days=i)).isoformat()
+            rows.append(("IDX", "BBRI", day, c, c * 1.01, c * 0.99, c, 1000, 0.0))
+        conn.executemany(
+            "INSERT INTO bar (book, symbol, date, open, high, low, close, volume, "
+            "dividend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        cur = conn.execute(
+            "INSERT INTO trade (book, symbol, entry_date, entry_qty, entry_avg_price, "
+            "status, stop, stop_provenance) "
+            "VALUES ('IDX', 'BBRI', ?, 30, 100.0, 'closed', 90.0, 'recorded')",
+            (rows[0][2],))
+        tid = cur.lastrowid
+        conn.execute(
+            "INSERT INTO trade_exit (trade_id, source, source_ref, exit_date, "
+            "quantity, price, reason) VALUES (?, 'ibkr', 'r1', ?, 30, ?, "
+            "'close_below_ma10')", (tid, rows[5][2], closes[5]))
+        conn.commit()
+        conn.close()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["counterfactual", "--book", "IDX", "--db", self.db_path])
+        out = buf.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("1 closed Trade(s)", out)
+        self.assertIn(f"Trade {tid} BBRI", out)
+
+        # The Trade-level row and its six variant rows are persisted.
+        conn = db.connect(self.db_path)
+        one = conn.execute(
+            "SELECT COUNT(*) AS n FROM trade_counterfactual WHERE trade_id=?",
+            (tid,)).fetchone()["n"]
+        six = conn.execute(
+            "SELECT COUNT(*) AS n FROM counterfactual_variant WHERE trade_id=?",
+            (tid,)).fetchone()["n"]
+        conn.close()
+        self.assertEqual(one, 1)
+        self.assertEqual(six, 6)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import backup, books, db, equity, fills, flex, flex_client, risk, secrets, stockbit, stops, trades
+from . import backup, books, counterfactual, db, equity, fills, flex, flex_client, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -419,6 +419,44 @@ def cmd_risk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_counterfactual(args: argparse.Namespace) -> int:
+    """Score every closed Trade against all six variants and report the deltas.
+
+    Adherence is inverted (SPEC §10.1): the engine derives *which rule a Trade
+    best fits*, storing signed deltas against the nominal variant and never a
+    verdict. Runs on closed Trades only (§10.9), recomputing in place until every
+    variant is resolved | capped. Best fit is derived at read time from the stored
+    six-way distance vector; no-stop Trades run trail-only and are flagged.
+    """
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        store = counterfactual.CounterfactualStore(conn)
+        selected = [args.book] if args.book else list(books.BOOKS)
+        for book in selected:
+            results = counterfactual.compute_book(conn, book)
+            print(f"{book}  ({len(results)} closed Trade(s))")
+            for tc in results:
+                store.upsert(tc.trade_id, tc)
+                cost = tc.deviation_cost()
+                cost_str = f"{cost:+.2f}" if cost is not None else "—"
+                flags = " [stopless]" if tc.stopless else ""
+                print(
+                    f"  Trade {tc.trade_id} {tc.symbol} {tc.entry_date}  "
+                    f"fit {tc.best_fit()}  partial {tc.partial_state}  "
+                    f"exit {tc.exit_path}  status {tc.nominal_status}  "
+                    f"cost {cost_str}{flags}"
+                )
+            eligible = [tc for tc in results if not tc.stopless]
+            print(
+                f"  {len(eligible)} in cross-Trade aggregates; "
+                f"{len(results) - len(eligible)} no-stop excluded"
+            )
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_restore_check(args: argparse.Namespace) -> int:
     """Rehearse a restore end to end and print what was verified (SPEC §13.5, §14.1).
 
@@ -610,6 +648,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(risk_p)
     risk_p.set_defaults(func=cmd_risk)
+
+    cf_p = sub.add_parser(
+        "counterfactual",
+        help="score closed Trades against all six variants and report the adherence deltas",
+    )
+    cf_p.add_argument(
+        "--book", choices=books.BOOKS, default=None,
+        help="limit to one book (default: every book — never aggregated across)",
+    )
+    _add_db_argument(cf_p)
+    cf_p.set_defaults(func=cmd_counterfactual)
 
     restore_p = sub.add_parser(
         "restore-check",

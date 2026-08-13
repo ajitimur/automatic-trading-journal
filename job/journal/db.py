@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -348,6 +348,54 @@ CREATE TABLE IF NOT EXISTS equity_snapshot (
     ledger_balance REAL,               -- IDX component
     cash_investor  REAL,               -- IDX component
     PRIMARY KEY (book, date)
+);
+
+-- The Trade-level counterfactual and adherence deltas (SPEC §10.7, #35), one row
+-- per closed Trade keyed by trade_id. Adherence is inverted (§10.1): the engine
+-- scores every Trade against all six variants and stores signed deltas against
+-- the nominal variant, never a boolean verdict. The daily job recomputes in
+-- place (§10.9) until every variant is resolved | capped, so this is an upsert
+-- target, not append-only. `deviation_cost` is deliberately NOT stored: it is
+-- derived on read from the nominal variant's raw legs (§10.7), so a no-stop Trade
+-- still reads a cost in cash rather than being left with nothing to divide. The
+-- full six-way `fit_vector` is stored as JSON (trading-day distances); best fit
+-- derives at read time so the no-verdicts rule stays intact.
+CREATE TABLE IF NOT EXISTS trade_counterfactual (
+    trade_id              INTEGER PRIMARY KEY REFERENCES trade(id),
+    book                  TEXT NOT NULL,
+    symbol                TEXT NOT NULL,
+    entry_date            TEXT NOT NULL,
+    entry_qty             REAL NOT NULL,
+    entry_avg_price       REAL NOT NULL,
+    stop                  REAL,                 -- NULL for a no-stop Trade
+    stop_provenance       TEXT,                 -- 'recorded' | 'reconstructed' | NULL
+    ruleset_version       TEXT,                 -- the version live on the entry date
+    nominal_variant       TEXT NOT NULL,        -- e.g. 'ma10/day3'
+    stopless              INTEGER NOT NULL,      -- 1 = no stop; out of cross-Trade aggregates
+    partial_state         TEXT NOT NULL,        -- in_band|early|late|none|not_applicable
+    partial_timing_delta  INTEGER,              -- signed days to the nearer band edge; NULL absent
+    actual_partial_fraction REAL,               -- descriptive, no delta (§10.7)
+    exit_path             TEXT NOT NULL,        -- stop_hit|trail|discretionary|other
+    trail_exit_delta      INTEGER,              -- signed days, actual − nominal; NULL if capped
+    nominal_status        TEXT NOT NULL,        -- resolved | capped | pending
+    fit_vector            TEXT NOT NULL         -- JSON {variant: trading-day distance}
+);
+
+-- The per-variant raw exit legs (SPEC §10.7, #35), one row per (trade_id,
+-- variant) — six per Trade. Legs are serialised so units derive on read: a
+-- `deviation_cost` stored *as* R would leave no-stop Trades with no cost at all,
+-- so prices are kept and R/%/ADR forms computed downstream. Each leg carries its
+-- date, price (NULL on a `cap` leg — never a fabricated exit, §10.8), fraction of
+-- the original position, trigger ∈ {partial, trail, stop, cap} and limit_locked.
+CREATE TABLE IF NOT EXISTS counterfactual_variant (
+    trade_id INTEGER NOT NULL REFERENCES trade(id),
+    variant  TEXT NOT NULL,             -- 'ma10/day3' etc.
+    trail    TEXT NOT NULL,             -- 'ma10' | 'ma20'
+    partial  TEXT NOT NULL,             -- 'none' | 'day3' | 'day5'
+    status   TEXT NOT NULL,             -- resolved | capped | pending
+    stopless INTEGER NOT NULL,
+    legs     TEXT NOT NULL,             -- JSON list of raw exit legs
+    PRIMARY KEY (trade_id, variant)
 );
 """
 
