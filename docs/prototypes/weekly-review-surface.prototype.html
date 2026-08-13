@@ -1,0 +1,1008 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROTOTYPE — The weekly review surface</title>
+<!--
+  PROTOTYPE — throwaway. Ticket #13, "The weekly review surface".
+
+  Three variants of the weekly review surface, switchable via ?variant= (or the
+  floating bar / arrow keys), on a throwaway page — this repo is a spec, there is
+  no app to host them in yet.
+
+    D — The landing          THE SETTLED DESIGN (default) — C's body, A's banner, a by-book
+                             strip of counts, strict week + open + unreviewed stragglers
+    A — The week's tape      outcome-led, chronological, both books side by side, read-only
+    B — Process scorecard    process-led, groupings first-class, rolling window, one book
+    C — Exit workbench       excursion-led, per-Trade drilldown, carries actions, includes open Trades
+
+  A, B and C are kept as the primary source — the alternatives that were
+  actually on the table when D was chosen.
+
+  Data below is fabricated but shaped to the field list settled in #7/#8/#9 and
+  deliberately kept at realistic sample size (n=3..6 per book per week).
+-->
+<style>
+  :root {
+    --ink: #16181d;
+    --ink-soft: #5a606b;
+    --ink-faint: #8b919c;
+    --line: #e3e5ea;
+    --paper: #fbfbfc;
+    --card: #ffffff;
+    --accent: #1f6feb;
+    --accent-soft: #eaf1fe;
+    --warn: #a8580a;
+    --warn-soft: #fdf3e6;
+    --bad: #b3261e;
+    --bad-soft: #fdecea;
+    --good: #17694a;
+    --good-soft: #e8f4ee;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 36px 28px 130px; }
+  header.top { border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 26px; }
+  .tag {
+    display: inline-block; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    font-weight: 700; color: var(--bad); background: var(--bad-soft);
+    padding: 3px 8px; border-radius: 4px; margin-bottom: 12px;
+  }
+  h1 { font-size: 26px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin: 0 0 12px; font-weight: 700; }
+  h3 { font-size: 15px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; max-width: 74ch; }
+  .lede { color: var(--ink-soft); }
+  section { margin-bottom: 30px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card + .card { margin-top: 12px; }
+  .muted { color: var(--ink-faint); }
+  .soft { color: var(--ink-soft); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .pill {
+    display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 20px; background: var(--accent-soft); color: var(--accent); white-space: nowrap;
+  }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.good { background: var(--good-soft); color: var(--good); }
+  .pill.mute { background: #eff0f3; color: var(--ink-soft); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; font-weight: 700; color: var(--ink-faint); font-size: 11px;
+       letter-spacing: .05em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 8px; border-bottom: 1px solid #f0f1f4; vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.thin td { color: var(--ink-faint); }
+  .pos { color: var(--good); font-weight: 600; }
+  .neg { color: var(--bad); font-weight: 600; }
+  button {
+    font: inherit; font-size: 13px; cursor: pointer; color: var(--ink);
+    background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .btnrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+  /* floating switcher */
+  #switcher {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 4px; z-index: 99;
+    background: #16181d; color: #fff; border-radius: 999px; padding: 6px 8px;
+    box-shadow: 0 6px 26px rgba(0,0,0,.28); font-size: 13px;
+  }
+  #switcher button {
+    background: transparent; border: 0; color: #fff; font-size: 15px; padding: 3px 10px; border-radius: 999px;
+  }
+  #switcher button:hover { background: rgba(255,255,255,.16); color: #fff; }
+  #switcher .label { padding: 0 10px; white-space: nowrap; font-weight: 600; }
+  #switcher .label small { font-weight: 400; opacity: .62; margin-left: 6px; }
+
+  /* ---- A ---- */
+  .books { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; align-items: start; }
+  @media (max-width: 980px) { .books { grid-template-columns: 1fr; } }
+  .bookhead { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 2px solid var(--ink); padding-bottom: 7px; margin-bottom: 14px; }
+  .bookhead h3 { margin: 0; font-size: 17px; letter-spacing: .02em; }
+  .strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line);
+           border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+  .strip div { background: var(--card); padding: 9px 11px; }
+  .strip .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); font-weight: 700; }
+  .strip .v { font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tapecard { border: 1px solid var(--line); border-radius: 9px; background: var(--card); padding: 12px 14px; margin-bottom: 10px; }
+  .tapecard .row1 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .tapecard .sym { font-weight: 700; font-size: 16px; }
+  .tapecard .meta { font-size: 12px; color: var(--ink-faint); margin: 5px 0 8px; }
+  .legs { font-size: 12.5px; border-left: 2px solid var(--line); padding-left: 10px; margin-left: 2px; }
+  .leg { display: flex; gap: 8px; padding: 2px 0; }
+  .leg .d { color: var(--ink-faint); min-width: 78px; font-variant-numeric: tabular-nums; }
+  .banner { border: 1px solid #f0dcc0; background: var(--warn-soft); border-radius: 9px; padding: 13px 16px; margin-bottom: 24px; }
+  .banner h2 { color: var(--warn); }
+  .banner ul { margin: 0; padding-left: 18px; font-size: 13.5px; }
+  .banner li { margin-bottom: 3px; }
+
+  /* ---- B ---- */
+  .meters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 8px; }
+  @media (max-width: 900px) { .meters { grid-template-columns: repeat(2, 1fr); } }
+  .meter { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 14px 16px; }
+  .meter .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); font-weight: 700; }
+  .meter .v { font-size: 30px; font-variant-numeric: tabular-nums; line-height: 1.1; margin: 6px 0 2px; letter-spacing: -0.02em; }
+  .meter .n { font-size: 11.5px; color: var(--ink-faint); }
+  .bar { height: 5px; border-radius: 3px; background: #eef0f3; margin-top: 9px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  .bar i.warn { background: var(--warn); }
+  .bar i.good { background: var(--good); }
+  .split { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 26px; align-items: start; }
+  @media (max-width: 1020px) { .split { grid-template-columns: 1fr; } }
+  .grouping { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 6px 14px 10px; margin-bottom: 14px; }
+  .grouping h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); margin: 12px 0 4px; }
+  .rail { border: 1px dashed #c9ccd3; border-radius: 10px; background: #f6f7f9; padding: 14px 15px; }
+  .rail h2 { margin-bottom: 4px; }
+  .rail .note { font-size: 11.5px; color: var(--ink-faint); margin-bottom: 12px; }
+  .attn { border-top: 1px solid var(--line); padding: 10px 0 2px; font-size: 12.5px; }
+  .attn:first-of-type { border-top: 0; }
+  .attn .t { font-weight: 600; display: block; margin-bottom: 2px; }
+  .outcome-foot { display: flex; gap: 22px; flex-wrap: wrap; border-top: 1px solid var(--line);
+                  padding-top: 12px; margin-top: 6px; font-size: 13px; color: var(--ink-soft); }
+  .outcome-foot b { font-variant-numeric: tabular-nums; color: var(--ink); }
+
+  /* ---- C ---- */
+  .work { display: grid; grid-template-columns: 268px minmax(0,1fr); gap: 24px; align-items: start; }
+  @media (max-width: 1020px) { .work { grid-template-columns: 1fr; } }
+  .tradelist { border: 1px solid var(--line); border-radius: 10px; background: var(--card); overflow: hidden; }
+  .tradelist .grp { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; font-weight: 700;
+                    color: var(--ink-faint); background: #f6f7f9; padding: 6px 13px; border-bottom: 1px solid var(--line); }
+  .ti { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid #f0f1f4;
+        border-radius: 0; padding: 10px 13px; background: transparent; }
+  .ti:hover { background: var(--accent-soft); border-color: #f0f1f4; color: inherit; }
+  .ti.sel { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  .ti .s { font-weight: 700; }
+  .ti .m { font-size: 11.5px; color: var(--ink-faint); }
+  .timeline { display: grid; gap: 2px; margin: 6px 0 4px; }
+  .tl-days { display: grid; gap: 2px; }
+  .tl-cell { height: 30px; border-radius: 3px; background: #eef0f3; position: relative; }
+  .tl-cell.held { background: #dbe6fb; }
+  .tl-cell.mark::after {
+    content: attr(data-m); position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: #fff; border-radius: 3px;
+  }
+  .tl-cell.entry::after { background: var(--ink); }
+  .tl-cell.exit::after { background: var(--accent); }
+  .tl-cell.mfe::after { background: var(--good); }
+  .tl-cell.mae::after { background: var(--bad); }
+  .tl-cell.sim::after { background: var(--warn); }
+  .tl-axis { display: grid; gap: 2px; font-size: 9.5px; color: var(--ink-faint); text-align: center; font-variant-numeric: tabular-nums; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-soft); margin-top: 6px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 14px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 780px) { .grid2 { grid-template-columns: 1fr; } }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 12.5px; }
+  .kv dt { color: var(--ink-faint); }
+  .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .qflag { font-size: 12px; color: var(--warn); background: var(--warn-soft); border: 1px solid #f0dcc0;
+           border-radius: 6px; padding: 7px 10px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <span class="tag">Prototype — ticket #13</span>
+    <h1>The weekly review surface</h1>
+    <p class="lede" id="blurb"></p>
+  </header>
+  <main id="root"></main>
+</div>
+
+<div id="switcher">
+  <button id="prev" title="Previous variant">←</button>
+  <span class="label" id="swlabel"></span>
+  <button id="next" title="Next variant">→</button>
+</div>
+
+<script>
+/* ------------------------------------------------------------------ *
+ * Fabricated data — shaped to #7 (field list), #8 (adherence), #9 (regime)
+ * Week under review: 2026-08-03 → 2026-08-07. Today: 2026-08-12.
+ * ------------------------------------------------------------------ */
+
+const REGIME = {
+  US:  { label: 'uptrend',        detail: 'close above MA10/20/50, 3 of 3 slopes rising', off52w: -2.1, rvol20: 14.2 },
+  IDX: { label: 'weak_downtrend', detail: 'close above MA10 only, 1 of 3 slopes rising',  off52w: -9.4, rvol20: 11.0 }
+};
+
+const TRADES = [
+  {
+    id: 'T-2026-0731-AVGO', book: 'US', sym: 'AVGO', state: 'closed',
+    entry: '2026-07-31', entryPx: 318.40, qty: 60, stop: 302.00, stopProv: 'recorded',
+    setup: 'base_breakout', stack: 'aligned_up', regime: 'uptrend',
+    adr: 3.1, stopDistAdr: 1.66, chased: true, riskPct: 0.98, expPct: 11.4, rs63: 12.4, volRatio: 2.4,
+    maDist10: 1.9, maDist50: 4.4, off52w: -1.2,
+    realizedR: 1.42, days: 6,
+    mfe: { px: 349.10, date: '2026-08-05', adr: 3.1, r: 1.87 },
+    mae: { px: 311.20, date: '2026-08-03', adr: -0.73, r: -0.44 },
+    exits: [
+      { date: '2026-08-04', qty: 20, px: 336.10, reason: 'scheduled_partial', day: 3,
+        exMfe: { px: 338.00, date: '2026-08-04', adr: 1.99 }, exMae: { px: 311.20, date: '2026-08-03', adr: -0.73 } },
+      { date: '2026-08-07', qty: 40, px: 341.90, reason: 'trail_ma10', day: 6,
+        exMfe: { px: 349.10, date: '2026-08-05', adr: 3.11 }, exMae: { px: 311.20, date: '2026-08-03', adr: -0.73 } }
+    ],
+    exitStack: 'aligned_up', maDist10Exit: 2.2,
+    adherence: { fit: 0.5, partialState: 'in_band', partialDelta: 0, trailDelta: 0, devCost: 0.00, nominal: 'MA10 / day3' },
+    fwd: { r20: null, note: 'window completes 2026-09-04' },
+    note: 'Took the partial a day late on purpose — volume was still expanding.'
+  },
+  {
+    id: 'T-2026-0803-CRWD', book: 'US', sym: 'CRWD', state: 'closed',
+    entry: '2026-08-03', entryPx: 412.75, qty: 34, stop: null, stopProv: 'absent',
+    setup: 'high_tight_flag', stack: 'aligned_up', regime: 'uptrend',
+    adr: 4.0, stopDistAdr: null, chased: null, riskPct: null, expPct: 12.9, rs63: 21.8, volRatio: 3.1,
+    maDist10: 3.3, maDist50: 8.1, off52w: -0.4,
+    realizedR: null, realizedPct: -3.9, days: 4,
+    mfe: { px: 429.00, date: '2026-08-04', adr: 0.98, r: null },
+    mae: { px: 389.10, date: '2026-08-06', adr: -1.43, r: null },
+    exits: [
+      { date: '2026-08-06', qty: 34, px: 396.60, reason: 'discretionary', day: 4,
+        exMfe: { px: 429.00, date: '2026-08-04', adr: 0.98 }, exMae: { px: 389.10, date: '2026-08-06', adr: -1.43 } }
+    ],
+    exitStack: 'mixed', maDist10Exit: -1.1,
+    adherence: { fit: null, partialState: 'not_applicable', partialDelta: null, trailDelta: null, devCost: null, nominal: 'MA10 / day3' },
+    fwd: { r20: null, note: 'window completes 2026-09-03' },
+    note: '', missingStop: true, freezeIn: 14
+  },
+  {
+    id: 'T-2026-0721-NVDA', book: 'US', sym: 'NVDA', state: 'closed',
+    entry: '2026-07-21', entryPx: 176.20, qty: 140, stop: 168.90, stopProv: 'recorded',
+    setup: 'base_breakout', stack: 'aligned_up', regime: 'uptrend',
+    adr: 2.6, stopDistAdr: 1.59, chased: true, riskPct: 0.61, expPct: 14.8, rs63: 6.9, volRatio: 1.6,
+    maDist10: 0.8, maDist50: 2.9, off52w: -3.8,
+    realizedR: -1.00, days: 9,
+    mfe: { px: 181.40, date: '2026-07-23', adr: 1.13, r: 0.71 },
+    mae: { px: 168.10, date: '2026-08-03', adr: -1.77, r: -1.11 },
+    exits: [
+      { date: '2026-08-03', qty: 140, px: 168.90, reason: 'stop_hit', day: 9,
+        exMfe: { px: 181.40, date: '2026-07-23', adr: 1.13 }, exMae: { px: 168.10, date: '2026-08-03', adr: -1.77 } }
+    ],
+    exitStack: 'mixed', maDist10Exit: -2.4,
+    adherence: { fit: 2.0, partialState: 'not_applicable', partialDelta: null, trailDelta: null, devCost: null, nominal: 'MA10 / day3',
+                 naNote: 'stopped out before the day 3–5 band — partial never became applicable' },
+    fwd: { r20: null, note: 'window completes 2026-08-31' },
+    note: 'Never got going. Held it into the stop rather than cutting on the day-2 stall.'
+  },
+  {
+    id: 'T-2026-0728-BBCA', book: 'IDX', sym: 'BBCA', state: 'closed',
+    entry: '2026-07-28', entryPx: 9825, qty: 4000, stop: 9500, stopProv: 'reconstructed',
+    setup: 'base_breakout', stack: 'mixed', regime: 'weak_downtrend',
+    adr: 1.9, stopDistAdr: 1.74, chased: true, riskPct: 0.72, expPct: 21.8, rs63: 3.1, volRatio: 1.9,
+    maDist10: 1.1, maDist50: -0.6, off52w: -6.2,
+    realizedR: 0.61, days: 8,
+    mfe: { px: 10475, date: '2026-08-05', adr: 3.48, r: 2.00 },
+    mae: { px: 9690, date: '2026-07-29', adr: -0.72, r: -0.42 },
+    exits: [
+      { date: '2026-08-04', qty: 1400, px: 10250, reason: 'scheduled_partial', day: 5,
+        exMfe: { px: 10310, date: '2026-08-04', adr: 2.60 }, exMae: { px: 9690, date: '2026-07-29', adr: -0.72 } },
+      { date: '2026-08-07', qty: 2600, px: 10000, reason: 'trail_ma10', day: 8,
+        exMfe: { px: 10475, date: '2026-08-05', adr: 3.48 }, exMae: { px: 9690, date: '2026-07-29', adr: -0.72 } }
+    ],
+    exitStack: 'mixed', maDist10Exit: -0.9,
+    adherence: { fit: 1.0, partialState: 'in_band', partialDelta: 0, trailDelta: 1, devCost: 0.19, nominal: 'MA10 / day3' },
+    fwd: { r20: null, note: 'window completes 2026-09-04' },
+    note: 'Stop written down after the fact — I know roughly where it was.'
+  },
+  {
+    id: 'T-2026-0805-ANTM', book: 'IDX', sym: 'ANTM', state: 'closed',
+    entry: '2026-08-05', entryPx: 2140, qty: 20000, stop: 2040, stopProv: 'recorded',
+    setup: 'other', stack: 'mixed', regime: 'weak_downtrend',
+    adr: 2.8, stopDistAdr: 1.67, chased: true, riskPct: 0.55, expPct: 11.9, rs63: -2.4, volRatio: 1.2,
+    maDist10: 2.4, maDist50: 1.1, off52w: -14.0,
+    realizedR: -0.86, days: 3,
+    mfe: { px: 2185, date: '2026-08-05', adr: 0.75, r: 0.45 },
+    mae: { px: 2035, date: '2026-08-07', adr: -1.75, r: -1.05 },
+    exits: [
+      { date: '2026-08-07', qty: 20000, px: 2054, reason: 'discretionary', day: 3,
+        exMfe: { px: 2185, date: '2026-08-05', adr: 0.75 }, exMae: { px: 2035, date: '2026-08-07', adr: -1.75 } }
+    ],
+    exitStack: 'aligned_down', maDist10Exit: -3.1,
+    adherence: { fit: 0.0, partialState: 'in_band', partialDelta: 0, trailDelta: -2, devCost: -0.31, nominal: 'MA10 / day3' },
+    fwd: { r20: null, note: 'window completes 2026-09-04' },
+    note: 'Cut it ahead of the stop when it lost the 10.'
+  },
+  {
+    /* straggler — closed three weeks ago, never marked reviewed */
+    id: 'T-2026-0710-SMCI', book: 'US', sym: 'SMCI', state: 'closed', reviewed: false,
+    entry: '2026-07-10', entryPx: 58.20, qty: 300, stop: 55.40, stopProv: 'recorded',
+    setup: 'other', stack: 'mixed', regime: 'uptrend',
+    adr: 4.6, stopDistAdr: 1.05, chased: true, riskPct: 0.44, expPct: 8.8, rs63: -4.2, volRatio: 1.3,
+    maDist10: 0.6, maDist50: -1.4, off52w: -22.1,
+    realizedR: -0.42, days: 5,
+    mfe: { px: 60.90, date: '2026-07-13', adr: 1.01, r: 0.96 },
+    mae: { px: 55.10, date: '2026-07-17', adr: -1.16, r: -1.11 },
+    exits: [
+      { date: '2026-07-17', qty: 300, px: 57.02, reason: 'discretionary', day: 5,
+        exMfe: { px: 60.90, date: '2026-07-13', adr: 1.01 }, exMae: { px: 55.10, date: '2026-07-17', adr: -1.16 } }
+    ],
+    exitStack: 'mixed', maDist10Exit: -1.8,
+    adherence: { fit: 1.0, partialState: 'in_band', partialDelta: 1, trailDelta: -1, devCost: -0.22, nominal: 'MA10 / day3' },
+    fwd: { r20: -6.4, note: null },
+    note: ''
+  },
+  {
+    /* straggler */
+    id: 'T-2026-0715-MDKA', book: 'IDX', sym: 'MDKA', state: 'closed', reviewed: false,
+    entry: '2026-07-15', entryPx: 2350, qty: 30000, stop: 2240, stopProv: 'recorded',
+    setup: 'high_tight_flag', stack: 'aligned_up', regime: 'weak_downtrend',
+    adr: 2.5, stopDistAdr: 1.87, chased: true, riskPct: 0.81, expPct: 18.4, rs63: 15.6, volRatio: 2.8,
+    maDist10: 1.7, maDist50: 6.0, off52w: -3.1,
+    realizedR: 2.10, days: 7,
+    mfe: { px: 2795, date: '2026-07-23', adr: 7.57, r: 4.05 },
+    mae: { px: 2305, date: '2026-07-16', adr: -0.77, r: -0.41 },
+    exits: [
+      { date: '2026-07-20', qty: 10000, px: 2510, reason: 'scheduled_partial', day: 4,
+        exMfe: { px: 2580, date: '2026-07-20', adr: 3.91 }, exMae: { px: 2305, date: '2026-07-16', adr: -0.77 } },
+      { date: '2026-07-24', qty: 20000, px: 2640, reason: 'trail_ma10', day: 7,
+        exMfe: { px: 2795, date: '2026-07-23', adr: 7.57 }, exMae: { px: 2305, date: '2026-07-16', adr: -0.77 } }
+    ],
+    exitStack: 'aligned_up', maDist10Exit: 1.4,
+    adherence: { fit: 0.5, partialState: 'in_band', partialDelta: 1, trailDelta: 0, devCost: 0.08, nominal: 'MA10 / day3' },
+    fwd: { r20: 3.2, note: null },
+    note: 'Best trade of the month and I nearly did not take it.'
+  },
+  {
+    id: 'T-2026-0806-META', book: 'US', sym: 'META', state: 'open',
+    entry: '2026-08-06', entryPx: 742.10, qty: 22, stop: 715.00, stopProv: 'recorded',
+    setup: 'base_breakout', stack: 'aligned_up', regime: 'uptrend',
+    adr: 2.4, stopDistAdr: 1.52, chased: true, riskPct: 0.63, expPct: 10.2, rs63: 8.8, volRatio: 2.0,
+    maDist10: 1.4, maDist50: 5.2, off52w: -1.9,
+    live: { openR: 0.74, daysHeld: 4, maDist10Live: 2.1, lastClose: 762.20 },
+    exits: [], note: ''
+  },
+  {
+    id: 'T-2026-0810-TLKM', book: 'IDX', sym: 'TLKM', state: 'open',
+    entry: '2026-08-10', entryPx: 3180, qty: 12000, stop: null, stopProv: 'absent',
+    setup: null, stack: 'mixed', regime: 'weak_downtrend',
+    adr: 1.7, stopDistAdr: null, chased: null, riskPct: null, expPct: 9.1, rs63: 0.4, volRatio: 1.4,
+    maDist10: 0.9, maDist50: -1.2, off52w: -11.5,
+    live: { openR: null, daysHeld: 2, maDist10Live: 1.6, lastClose: 3245 },
+    exits: [], note: '', missingStop: true, missingSetup: true
+  }
+];
+
+const ATTENTION = [
+  { kind: 'stop', sev: 'bad',  title: 'CRWD — closed with no stop',
+    body: 'Freezes in 14 trading days (2026-09-03). After that the R is permanently missing.', act: 'Add stop' },
+  { kind: 'stop', sev: 'warn', title: 'TLKM — open, no stop or setup',
+    body: 'Entered 2 days ago. Risk % and chase are unavailable until the stop lands.', act: 'Add stop' },
+  { kind: 'repair', sev: 'bad', title: 'GOTO — span check failed',
+    body: 'Bar series does not cover 2026-07-14 → 2026-07-31. Enrichment held. Needs manual repair.', act: 'Repair' },
+  { kind: 'parked', sev: 'warn', title: '2 imports parked',
+    body: 'Orphan exit in BBRI (no matching open Trade), 6 days parked. One unmatched IBKR fill, 2 days.', act: 'Review queue' },
+  { kind: 'drift', sev: 'warn', title: 'AAPL (frozen 2026-06-30) — drift unacknowledged',
+    body: 'ma_dist_50 recomputes to 3.9 against a snapshot of 4.4. Bar data moved; acknowledge only.', act: 'Acknowledge' },
+  { kind: 'info', sev: 'mute', title: 'ANTM — 3 fields null (insufficient_history)',
+    body: 'No MA200 / pct_off_52w_high. A fact about the instrument, not a fault. No action.', act: null }
+];
+
+/* ------------------------------------------------------------------ */
+
+const WEEK = { from: '2026-08-03', to: '2026-08-07', label: 'Week of 3–7 August 2026' };
+const closed = TRADES.filter(t => t.state === 'closed');
+const open   = TRADES.filter(t => t.state === 'open');
+const lastExit = t => t.exits[t.exits.length - 1].date;
+const inWeek = t => lastExit(t) >= WEEK.from && lastExit(t) <= WEEK.to;
+const weekTrades = () => closed.filter(inWeek);
+const stragglers = () => closed.filter(t => !inWeek(t) && !t.reviewed);
+const byBook = b => closed.filter(t => t.book === b);
+const fmtR   = r => r === null || r === undefined ? '—' : (r > 0 ? '+' : '') + r.toFixed(2) + 'R';
+const cls    = n => n === null || n === undefined ? 'muted' : n > 0 ? 'pos' : n < 0 ? 'neg' : '';
+const sign   = n => n === null || n === undefined ? '—' : (n > 0 ? '+' : '') + n;
+const px     = (t, v) => t.book === 'IDX' ? v.toLocaleString('en-US') : v.toFixed(2);
+const day    = d => d.slice(5).replace('-', '/');
+const REASON = { scheduled_partial: 'scheduled partial', trail_ma10: 'trail MA10', stop_hit: 'stop hit', discretionary: 'discretionary' };
+
+function median(xs) {
+  if (!xs.length) return '—';
+  const s = xs.slice().sort((a, b) => a - b), m = s.length >> 1;
+  const v = s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  return (v > 0 ? '+' : '') + v;
+}
+
+/* R aggregates must declare what they excluded (#8, three-tier stop rule) */
+function rAgg(ts) {
+  const usable = ts.filter(t => t.realizedR !== null && t.realizedR !== undefined);
+  const excluded = ts.length - usable.length;
+  const sum = usable.reduce((a, t) => a + t.realizedR, 0);
+  const wins = usable.filter(t => t.realizedR > 0).length;
+  return {
+    n: usable.length, excluded,
+    sum, avg: usable.length ? sum / usable.length : null,
+    winRate: usable.length ? Math.round(100 * wins / usable.length) : null, wins
+  };
+}
+
+/* ================================================================== *
+ * VARIANT A — The week's tape
+ * outcome-led · chronological · both books side by side · read-only
+ * ================================================================== */
+function variantA() {
+  const bookCol = (b) => {
+    const ts = weekTrades().filter(t => t.book === b).slice().sort((x, y) =>
+      lastExit(x).localeCompare(lastExit(y)));
+    const a = rAgg(ts);
+    const reg = REGIME[b];
+    return `
+      <div>
+        <div class="bookhead">
+          <h3>${b}</h3>
+          <span class="pill ${b === 'US' ? 'good' : 'mute'}">${reg.label.replace('_', ' ')}</span>
+        </div>
+        <div class="strip">
+          <div><div class="k">Closed</div><div class="v">${ts.length}</div></div>
+          <div><div class="k">Net</div><div class="v ${cls(a.sum)}">${fmtR(a.sum)}</div></div>
+          <div><div class="k">Win rate</div><div class="v">${a.winRate === null ? '—' : a.winRate + '%'}</div></div>
+          <div><div class="k">Avg</div><div class="v ${cls(a.avg)}">${fmtR(a.avg)}</div></div>
+        </div>
+        <p class="muted" style="font-size:12px;margin:-8px 0 14px">
+          n=${a.n}${a.excluded ? `, ${a.excluded} excluded from R (no recorded stop)` : ''} — too few to read as a rate.
+        </p>
+        ${ts.map(t => tapeCard(t)).join('')}
+      </div>`;
+  };
+
+  const tapeCard = (t) => {
+    const last = t.exits[t.exits.length - 1];
+    return `
+      <div class="tapecard">
+        <div class="row1">
+          <span class="sym">${t.sym}</span>
+          <span class="${cls(t.realizedR)}" style="font-size:16px">
+            ${t.realizedR === null ? `${sign(t.realizedPct)}% <span class="muted" style="font-size:11px">no R</span>` : fmtR(t.realizedR)}
+          </span>
+          <span class="pill mute">${t.setup.replace(/_/g, ' ')}</span>
+          ${t.chased ? '<span class="pill warn">chased</span>' : ''}
+          ${t.stopProv === 'reconstructed' ? '<span class="pill mute">stop reconstructed</span>' : ''}
+          ${t.missingStop ? '<span class="pill bad">no stop</span>' : ''}
+        </div>
+        <div class="meta">
+          ${day(t.entry)} → ${day(last.date)} · ${t.days}d · entry ${px(t, t.entryPx)}
+          · stack ${t.stack.replace('_', ' ')} · ${t.exits.length} exit${t.exits.length > 1 ? 's' : ''}
+        </div>
+        <div class="legs">
+          ${t.exits.map(e => `
+            <div class="leg">
+              <span class="d">${day(e.date)} · d${e.day}</span>
+              <span>${e.qty.toLocaleString('en-US')} @ ${px(t, e.px)} — ${REASON[e.reason]}</span>
+              <span class="muted mono">MFE ${e.exMfe.adr.toFixed(2)} ADR</span>
+            </div>`).join('')}
+        </div>
+        ${t.note ? `<p class="soft" style="font-size:12.5px;margin:9px 0 0;font-style:italic">“${t.note}”</p>` : ''}
+      </div>`;
+  };
+
+  return `
+    <section class="banner">
+      <h2>Needs attention</h2>
+      <ul>
+        ${ATTENTION.filter(x => x.sev !== 'mute').map(x => `<li><b>${x.title}</b> — ${x.body}</li>`).join('')}
+      </ul>
+    </section>
+
+    <section>
+      <h2>Week of 3–7 August 2026 · closed Trades</h2>
+      <div class="books">${bookCol('US')}${bookCol('IDX')}</div>
+    </section>
+
+    <section>
+      <h2>Still open — not part of this week's result</h2>
+      <div class="card">
+        <table>
+          <thead><tr><th>Trade</th><th>Book</th><th>Entered</th><th class="num">Days</th><th class="num">Open R</th><th class="num">MA10 dist</th></tr></thead>
+          <tbody>
+            ${open.map(t => `<tr>
+              <td><b>${t.sym}</b>${t.missingStop ? ' <span class="pill bad">no stop</span>' : ''}</td>
+              <td>${t.book}</td><td>${day(t.entry)}</td>
+              <td class="num">${t.live.daysHeld}</td>
+              <td class="num ${cls(t.live.openR)}">${fmtR(t.live.openR)}</td>
+              <td class="num">${t.live.maDist10Live.toFixed(1)} ADR</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
+/* ================================================================== *
+ * VARIANT B — Process scorecard
+ * process-led · groupings first-class · rolling window · one book at a time
+ * ================================================================== */
+let bState = { book: 'US', window: '12w' };
+
+function variantB() {
+  const b = bState.book;
+  /* the rolling window is what makes n survivable — a strict week is n=3 */
+  const pool = byBook(b);
+  const a = rAgg(pool);
+
+  const chaseable = pool.filter(t => t.stopProv === 'recorded');
+  const chased = chaseable.filter(t => t.chased).length;
+  const withStop = pool.filter(t => t.stop !== null).length;
+  const inBand = pool.filter(t => t.adherence.partialState === 'in_band').length;
+  const bandApplicable = pool.filter(t => t.adherence.partialState !== 'not_applicable').length;
+  const trailOnTime = pool.filter(t => t.adherence.trailDelta === 0).length;
+  const trailApplicable = pool.filter(t => t.adherence.trailDelta !== null).length;
+
+  const meter = (k, v, n, pct, tone) => `
+    <div class="meter">
+      <div class="k">${k}</div>
+      <div class="v">${v}</div>
+      <div class="n">${n}</div>
+      <div class="bar"><i class="${tone}" style="width:${pct}%"></i></div>
+    </div>`;
+
+  const group = (title, keyFn, note) => {
+    const buckets = {};
+    pool.forEach(t => { const k = keyFn(t); (buckets[k] = buckets[k] || []).push(t); });
+    const rows = Object.entries(buckets).map(([k, ts]) => {
+      const g = rAgg(ts);
+      const dev = ts.map(t => t.adherence.devCost).filter(x => x !== null && x !== undefined);
+      const ch = ts.filter(t => t.stopProv === 'recorded');
+      return `<tr class="${ts.length < 3 ? 'thin' : ''}">
+        <td>${k}${ts.length < 3 ? ' <span class="pill mute">thin</span>' : ''}</td>
+        <td class="num">${ts.length}</td>
+        <td class="num">${ch.length ? Math.round(100 * ch.filter(t => t.chased).length / ch.length) + '%' : '—'}</td>
+        <td class="num">${dev.length ? fmtR(dev.reduce((x, y) => x + y, 0) / dev.length) : '—'}</td>
+        <td class="num ${cls(g.avg)}">${fmtR(g.avg)}${g.excluded ? ` <span class="muted">(−${g.excluded})</span>` : ''}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <h3>${title}</h3>
+      <table>
+        <thead><tr><th>${title}</th><th class="num">n</th><th class="num">Chased</th><th class="num">Dev cost</th><th class="num">Avg R</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${note ? `<p class="muted" style="font-size:11.5px;margin:6px 0 2px">${note}</p>` : ''}`;
+  };
+
+  return `
+    <section>
+      <div class="btnrow" style="margin-bottom:18px">
+        <span class="muted" style="font-size:12px;margin-right:4px">Book</span>
+        <button class="bk ${b === 'US' ? 'active' : ''}" data-bk="US">US</button>
+        <button class="bk ${b === 'IDX' ? 'active' : ''}" data-bk="IDX">IDX</button>
+        <span class="muted" style="font-size:12px;margin:0 4px 0 18px">Window</span>
+        <button class="wn ${bState.window === '1w' ? 'active' : ''}" data-wn="1w">This week</button>
+        <button class="wn ${bState.window === '12w' ? 'active' : ''}" data-wn="12w">Rolling 12w</button>
+        <button class="wn ${bState.window === 'all' ? 'active' : ''}" data-wn="all">All</button>
+        <span class="pill mute" style="margin-left:10px">${REGIME[b].label.replace('_', ' ')} · ${REGIME[b].detail}</span>
+      </div>
+
+      <div class="split">
+        <div>
+          <h2>Process — how the trades were taken</h2>
+          <div class="meters">
+            ${meter('Chase rate', chaseable.length ? Math.round(100 * chased / chaseable.length) + '%' : '—',
+                    `${chased}/${chaseable.length} · ${pool.length - chaseable.length} excluded (stop absent or reconstructed)`,
+                    chaseable.length ? 100 * chased / chaseable.length : 0, 'warn')}
+            ${meter('Partial in band', bandApplicable ? `${inBand}/${bandApplicable}` : '—',
+                    `${pool.length - bandApplicable} not applicable (never reached day 3)`,
+                    bandApplicable ? 100 * inBand / bandApplicable : 0, 'good')}
+            ${meter('Trail on signal', trailApplicable ? `${trailOnTime}/${trailApplicable}` : '—',
+                    `vs nominal MA10 · median delta ${median(pool.map(t=>t.adherence.trailDelta).filter(x=>x!==null))}d`,
+                    trailApplicable ? 100 * trailOnTime / trailApplicable : 0, '')}
+            ${meter('Stop recorded', `${withStop}/${pool.length}`,
+                    `${pool.filter(t=>t.stopProv==='reconstructed').length} reconstructed · ${pool.filter(t=>t.stop===null).length} absent`,
+                    100 * withStop / pool.length, withStop === pool.length ? 'good' : 'warn')}
+          </div>
+
+          <p class="muted" style="font-size:12px;margin:14px 0 20px">
+            Every rate above names its denominator and its exclusions. At this sample size a rate is a
+            description of ${pool.length} Trades, not an estimate of a true rate.
+          </p>
+
+          <h2>Groupings</h2>
+          <div class="grouping">
+            ${group('Setup', t => t.setup.replace(/_/g, ' '))}
+            ${group('Stack state at entry', t => t.stack.replace('_', ' '))}
+            ${group('Chased', t => t.stopProv !== 'recorded' ? 'not measurable' : t.chased ? 'chased' : 'not chased',
+                    'Trades with an absent or reconstructed stop cannot be graded for chasing (#7) and are shown as their own row rather than folded in.')}
+            ${group('Exit reason (final leg)', t => REASON[t.exits[t.exits.length - 1].reason])}
+          </div>
+
+          <div class="outcome-foot">
+            <span>Outcome, for the record —</span>
+            <span>closed <b>${pool.length}</b></span>
+            <span>net <b class="${cls(a.sum)}">${fmtR(a.sum)}</b></span>
+            <span>win rate <b>${a.winRate === null ? '—' : a.winRate + '%'}</b> <span class="muted">(n=${a.n})</span></span>
+            <span>avg <b class="${cls(a.avg)}">${fmtR(a.avg)}</b></span>
+          </div>
+        </div>
+
+        <aside class="rail">
+          <h2>Attention</h2>
+          <p class="note">Always on. Not scoped to the window or the book — a 20-day stop fuse does not wait for Sunday.</p>
+          ${ATTENTION.map(x => `
+            <div class="attn">
+              <span class="t">${x.title} <span class="pill ${x.sev}">${x.kind}</span></span>
+              <span class="muted">${x.body}</span>
+              ${x.act ? `<div style="margin-top:6px"><button>${x.act}</button></div>` : ''}
+            </div>`).join('')}
+        </aside>
+      </div>
+    </section>`;
+}
+
+/* ================================================================== *
+ * VARIANT C — Exit workbench
+ * excursion-led · per-Trade drilldown · carries actions · includes open Trades
+ * ================================================================== */
+let cSel = 'T-2026-0731-AVGO';
+
+function variantC() {
+  const t = TRADES.find(x => x.id === cSel);
+  const list = (label, ts) => ts.length ? `
+    <div class="grp">${label}</div>
+    ${ts.map(x => `
+      <button class="ti ${x.id === cSel ? 'sel' : ''}" data-id="${x.id}">
+        <span class="s">${x.sym}</span>
+        <span class="muted" style="font-size:11px"> ${x.book}</span>
+        ${x.state === 'closed'
+          ? `<span class="${cls(x.realizedR)}" style="float:right">${x.realizedR === null ? sign(x.realizedPct) + '%' : fmtR(x.realizedR)}</span>`
+          : `<span class="muted" style="float:right">${fmtR(x.live.openR)} open</span>`}
+        <span class="m">${day(x.entry)}${x.state === 'closed' ? ' → ' + day(x.exits[x.exits.length - 1].date) : ' · held ' + x.live.daysHeld + 'd'}</span>
+      </button>`).join('')}` : '';
+
+  return `
+    <section class="work">
+      <div class="tradelist">
+        ${list('Closed', closed)}
+        ${list('Open', open)}
+      </div>
+      <div>${t.state === 'closed' ? closedDetail(t) : openDetail(t)}</div>
+    </section>`;
+}
+
+function tradeDays(t) {
+  const end = t.state === 'closed' ? t.exits[t.exits.length - 1].day : t.live.daysHeld;
+  return Math.max(end, 6);
+}
+
+function timeline(t) {
+  const n = tradeDays(t) + 2;
+  const marks = {};
+  const coincide = [];
+  marks[1] = { c: 'entry', m: 'E' };
+  if (t.state === 'closed') {
+    t.exits.forEach((e, i) => { marks[e.day] = { c: 'exit', m: 'X' + (t.exits.length > 1 ? (i + 1) : '') }; });
+    /* the nominal variant's simulated legs, from #8 — shown against the actual.
+       Where a sim leg lands on the same day as a real one the marker would be
+       invisible, so the coincidence is stated in words instead — it is the
+       most interesting case (you did exactly what the rule said). */
+    simLegs(t).forEach(s => {
+      if (marks[s.day] && marks[s.day].c === 'exit') coincide.push(`d${s.day}`);
+      else if (!marks[s.day]) marks[s.day] = { c: 'sim', m: s.m };
+    });
+  }
+  const mfeDay = t.mfe ? dayOf(t, t.mfe.date) : null;
+  const maeDay = t.mae ? dayOf(t, t.mae.date) : null;
+  if (mfeDay && !marks[mfeDay]) marks[mfeDay] = { c: 'mfe', m: 'H' };
+  if (maeDay && !marks[maeDay]) marks[maeDay] = { c: 'mae', m: 'L' };
+
+  const heldTo = t.state === 'closed' ? t.exits[t.exits.length - 1].day : t.live.daysHeld;
+  const cells = [], axis = [];
+  for (let d = 1; d <= n; d++) {
+    const mk = marks[d];
+    cells.push(`<div class="tl-cell ${d <= heldTo ? 'held' : ''} ${mk ? 'mark ' + mk.c : ''}" ${mk ? `data-m="${mk.m}"` : ''}></div>`);
+    axis.push(`<div>${d}</div>`);
+  }
+  const cols = `grid-template-columns: repeat(${n}, minmax(0,1fr));`;
+  return `
+    <div class="timeline">
+      <div class="tl-days" style="${cols}">${cells.join('')}</div>
+      <div class="tl-axis" style="${cols}">${axis.join('')}</div>
+    </div>
+    <div class="legend">
+      <span><i style="background:#16181d"></i>entry</span>
+      <span><i style="background:var(--accent)"></i>your exit</span>
+      <span><i style="background:var(--warn)"></i>nominal variant would have</span>
+      <span><i style="background:var(--good)"></i>high (MFE)</span>
+      <span><i style="background:var(--bad)"></i>low (MAE)</span>
+    </div>
+    ${coincide.length ? `<p class="muted" style="font-size:11.5px;margin:6px 0 0">
+      The nominal variant exited on the same day you did at ${coincide.join(' and ')} — its marker sits underneath yours.
+    </p>` : ''}`;
+}
+
+function dayOf(t, date) {
+  /* fabricated: trading-day index, close enough for a prototype */
+  const map = {
+    'T-2026-0731-AVGO': { '2026-08-03': 2, '2026-08-04': 3, '2026-08-05': 4, '2026-08-07': 6 },
+    'T-2026-0803-CRWD': { '2026-08-04': 2, '2026-08-06': 4 },
+    'T-2026-0721-NVDA': { '2026-07-23': 3, '2026-08-03': 9 },
+    'T-2026-0728-BBCA': { '2026-07-29': 2, '2026-08-04': 5, '2026-08-05': 6, '2026-08-07': 8 },
+    'T-2026-0805-ANTM': { '2026-08-05': 1, '2026-08-07': 3 },
+    'T-2026-0710-SMCI': { '2026-07-13': 3, '2026-07-17': 5 },
+    'T-2026-0715-MDKA': { '2026-07-16': 2, '2026-07-20': 4, '2026-07-23': 6, '2026-07-24': 7 }
+  };
+  return (map[t.id] || {})[date] || null;
+}
+
+function simLegs(t) {
+  const a = t.adherence;
+  const out = [];
+  if (a.partialState === 'in_band' && a.partialDelta !== null) out.push({ day: 3, m: 'p' });
+  if (a.trailDelta !== null && t.exits.length) {
+    const actual = t.exits[t.exits.length - 1].day;
+    out.push({ day: actual - a.trailDelta, m: 't' });
+  }
+  return out;
+}
+
+function closedDetail(t) {
+  const a = t.adherence;
+  return `
+    <div class="card">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">
+        <h3 style="font-size:20px;margin:0">${t.sym}</h3>
+        <span class="pill mute">${t.book}</span>
+        <span class="pill mute">${t.setup.replace(/_/g, ' ')}</span>
+        ${t.chased ? '<span class="pill warn">chased ' + t.stopDistAdr.toFixed(2) + ' ADR</span>' : ''}
+        ${t.stopProv !== 'recorded' ? `<span class="pill ${t.stopProv === 'absent' ? 'bad' : 'mute'}">stop ${t.stopProv}</span>` : ''}
+        <span style="margin-left:auto;font-size:19px" class="${cls(t.realizedR)}">
+          ${t.realizedR === null ? sign(t.realizedPct) + '%' : fmtR(t.realizedR)}
+        </span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:0 0 14px">
+        entry ${day(t.entry)} @ ${px(t, t.entryPx)} · ${t.qty.toLocaleString('en-US')} sh ·
+        stop ${t.stop ? px(t, t.stop) : '—'} · risk ${t.riskPct !== null ? t.riskPct.toFixed(2) + '%' : '—'} ·
+        exposure ${t.expPct.toFixed(1)}% · regime at entry ${t.regime.replace('_', ' ')}
+      </p>
+
+      <h2>The move, day by day</h2>
+      ${timeline(t)}
+
+      ${a.naNote ? `<div class="qflag">${a.naNote}. <b>Absence is not deviation</b> — no cost is shown.</div>` : ''}
+      ${t.missingStop ? `<div class="qflag">No stop recorded, so this Trade has no R, no chase grade and no deviation cost. Freezes in ${t.freezeIn} trading days.</div>` : ''}
+
+      <div class="grid2" style="margin-top:18px">
+        <div>
+          <h2>Exit legs — each graded on its own excursion</h2>
+          <table>
+            <thead><tr><th>Leg</th><th class="num">Qty</th><th class="num">Price</th><th class="num">MFE to date</th><th class="num">Left on table</th></tr></thead>
+            <tbody>
+              ${t.exits.map((e, i) => {
+                const left = ((e.exMfe.px - e.px) / t.entryPx * 100 / t.adr);
+                return `<tr>
+                  <td>d${e.day} ${REASON[e.reason]}<div class="muted" style="font-size:11px">${day(e.date)}</div></td>
+                  <td class="num">${e.qty.toLocaleString('en-US')}</td>
+                  <td class="num">${px(t, e.px)}</td>
+                  <td class="num">${e.exMfe.adr.toFixed(2)} ADR<div class="muted" style="font-size:11px">${day(e.exMfe.date)}</div></td>
+                  <td class="num ${left > 1 ? 'neg' : ''}">${left.toFixed(2)} ADR</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+          <p class="muted" style="font-size:11.5px;margin:8px 0 0">
+            Per-Exit excursion runs entry → that leg's own date (#7). Trade-level MFE
+            ${t.mfe.adr.toFixed(2)} ADR on ${day(t.mfe.date)} answers a different question.
+          </p>
+        </div>
+
+        <div>
+          <h2>Against the nominal variant — ${a.nominal}</h2>
+          <dl class="kv">
+            <dt>Fit</dt><dd>${a.fit === null ? '—' : a.fit.toFixed(1) + ' trading days'}</dd>
+            <dt>Partial</dt><dd>${a.partialState.replace(/_/g, ' ')}${a.partialDelta !== null ? ` · ${sign(a.partialDelta)}d` : ''}</dd>
+            <dt>Trail</dt><dd>${a.trailDelta === null ? 'not applicable' : sign(a.trailDelta) + 'd vs signal'}</dd>
+            <dt>Deviation cost</dt><dd class="${cls(a.devCost)}">${a.devCost === null ? 'not applicable' : fmtR(a.devCost)}</dd>
+          </dl>
+          <h2 style="margin-top:16px">Exit geometry</h2>
+          <dl class="kv">
+            <dt>Stack at exit</dt><dd>${t.exitStack.replace('_', ' ')}</dd>
+            <dt>MA10 dist at exit</dt><dd>${t.maDist10Exit.toFixed(1)} ADR</dd>
+            <dt>MAE</dt><dd>${t.mae.adr.toFixed(2)} ADR on ${day(t.mae.date)}</dd>
+            <dt>20d forward</dt><dd class="muted">${t.fwd.r20 === null ? t.fwd.note : t.fwd.r20}</dd>
+          </dl>
+        </div>
+      </div>
+
+      ${t.note ? `<p class="soft" style="font-size:13px;font-style:italic;margin:16px 0 0">“${t.note}”</p>` : ''}
+
+      <div class="actions">
+        <button>Override exit reason</button>
+        <button>${t.stop ? 'Stop locked' : 'Add stop'}</button>
+        <button>Edit note</button>
+        <button class="active">Reviewed →</button>
+      </div>
+    </div>`;
+}
+
+function openDetail(t) {
+  return `
+    <div class="card">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <h3 style="font-size:20px;margin:0">${t.sym}</h3>
+        <span class="pill mute">${t.book}</span>
+        <span class="pill">open</span>
+        ${t.missingStop ? '<span class="pill bad">no stop</span>' : ''}
+        ${t.missingSetup ? '<span class="pill bad">no setup</span>' : ''}
+        <span style="margin-left:auto;font-size:19px" class="${cls(t.live.openR)}">${fmtR(t.live.openR)} open</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 14px">
+        entry ${day(t.entry)} @ ${px(t, t.entryPx)} · held ${t.live.daysHeld}d · last ${px(t, t.live.lastClose)}
+      </p>
+      <h2>The move so far</h2>
+      ${timeline(t)}
+      <div class="grid2" style="margin-top:16px">
+        <dl class="kv">
+          <dt>Days held</dt><dd>${t.live.daysHeld}</dd>
+          <dt>Open R</dt><dd>${fmtR(t.live.openR)}</dd>
+          <dt>MA10 dist (live)</dt><dd>${t.live.maDist10Live.toFixed(1)} ADR</dd>
+        </dl>
+        <dl class="kv">
+          <dt>Stop</dt><dd>${t.stop ? px(t, t.stop) : '<span class="neg">not set</span>'}</dd>
+          <dt>Setup</dt><dd>${t.setup ? t.setup.replace(/_/g, ' ') : '<span class="neg">not set</span>'}</dd>
+          <dt>Regime</dt><dd>${t.regime.replace('_', ' ')}</dd>
+        </dl>
+      </div>
+      ${t.missingStop ? '<div class="qflag">Only four fields roll daily while a Trade is open (#7). Open R needs a stop — supply one and it starts computing immediately.</div>' : ''}
+      <div class="actions">
+        <button>${t.stop ? 'Stop locked' : 'Add stop'}</button>
+        <button>${t.setup ? 'Setup locked' : 'Add setup'}</button>
+      </div>
+    </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+
+/* ================================================================== *
+ * VARIANT D — THE LANDING (settled with the trader on #13)
+ *
+ *   C's per-Trade exit workbench, as the body of the surface
+ * + A's attention banner, across the top
+ * + a thin process strip — COUNTS, never rates, split by book
+ * + strict week, plus all open, plus an unreviewed-stragglers section
+ * + one mixed list, book as a label per row
+ * + actions write straight through
+ *
+ * The strip splits by book because a single "2 of 3 stops recorded" across a
+ * mixed list would be an aggregate across books, which the map rules out. The
+ * *list* may mix — a list is not an aggregate — but no number may.
+ * ================================================================== */
+let dSel = 'T-2026-0731-AVGO';
+
+function variantD() {
+  const t = TRADES.find(x => x.id === dSel);
+  const strag = stragglers();
+
+  /* counts, never rates — every one names its denominator */
+  const stripFor = (b) => {
+    const ts = weekTrades().filter(x => x.book === b);
+    if (!ts.length) return `<tr><td>${b}</td><td colspan="5" class="muted">no Trades closed this week</td></tr>`;
+    const gradeable = ts.filter(x => x.stopProv === 'recorded');
+    const band = ts.filter(x => x.adherence.partialState !== 'not_applicable');
+    const trail = ts.filter(x => x.adherence.trailDelta !== null);
+    const a = rAgg(ts);
+    return `<tr>
+      <td><b>${b}</b> <span class="pill mute">${REGIME[b].label.replace('_', ' ')}</span></td>
+      <td class="num">${ts.length}</td>
+      <td class="num">${gradeable.filter(x => x.chased).length} of ${gradeable.length}
+        ${ts.length - gradeable.length ? `<span class="muted">(${ts.length - gradeable.length} n/a)</span>` : ''}</td>
+      <td class="num">${band.filter(x => x.adherence.partialDelta === 0).length} of ${band.length}
+        ${ts.length - band.length ? `<span class="muted">(${ts.length - band.length} n/a)</span>` : ''}</td>
+      <td class="num">${trail.filter(x => x.adherence.trailDelta === 0).length} of ${trail.length}</td>
+      <td class="num">${ts.filter(x => x.stop !== null).length} of ${ts.length}</td>
+      <td class="num ${cls(a.sum)}">${fmtR(a.sum)}${a.excluded ? ` <span class="muted">(−${a.excluded})</span>` : ''}</td>
+    </tr>`;
+  };
+
+  const row = (x) => `
+    <button class="ti ${x.id === dSel ? 'sel' : ''}" data-did="${x.id}">
+      <span class="s">${x.sym}</span>
+      <span class="muted" style="font-size:11px"> ${x.book}</span>
+      ${x.state === 'closed'
+        ? `<span class="${cls(x.realizedR)}" style="float:right">${x.realizedR === null ? sign(x.realizedPct) + '%' : fmtR(x.realizedR)}</span>`
+        : `<span class="muted" style="float:right">${fmtR(x.live.openR)} open</span>`}
+      <span class="m">${day(x.entry)}${x.state === 'closed' ? ' → ' + day(lastExit(x)) : ' · held ' + x.live.daysHeld + 'd'}${
+        x.missingStop ? ' · <span style="color:var(--bad)">no stop</span>' : ''}</span>
+    </button>`;
+
+  const group = (label, ts, note) => ts.length ? `
+    <div class="grp">${label}${note ? ` <span style="font-weight:400;text-transform:none;letter-spacing:0">${note}</span>` : ''}</div>
+    ${ts.map(row).join('')}` : '';
+
+  return `
+    <section class="banner">
+      <h2>Needs attention</h2>
+      <ul>
+        ${ATTENTION.filter(x => x.sev !== 'mute').map(x => `<li><b>${x.title}</b> — ${x.body}</li>`).join('')}
+      </ul>
+      <p class="muted" style="font-size:11.5px;margin:8px 0 0">
+        Weekly cadence gives a 20-trading-day stop fuse roughly three looks. CRWD is on its second.
+      </p>
+    </section>
+
+    <section>
+      <h2>${WEEK.label} · the week in counts</h2>
+      <div class="card" style="padding:4px 14px 8px">
+        <table>
+          <thead><tr>
+            <th>Book</th><th class="num">Closed</th><th class="num">Chased</th>
+            <th class="num">Partial in band</th><th class="num">Trail on signal</th>
+            <th class="num">Stop recorded</th><th class="num">Net R</th>
+          </tr></thead>
+          <tbody>${stripFor('US')}${stripFor('IDX')}</tbody>
+        </table>
+        <p class="muted" style="font-size:11.5px;margin:8px 0 4px">
+          Counts, never rates — at this sample a percentage would invent precision that isn't there.
+          Split by book because no number combines the two; the list below may mix, a number may not.
+          <b>n/a</b> is absence, not deviation: a Trade stopped out before day 3 never had a partial to be late on.
+        </p>
+      </div>
+    </section>
+
+    <section class="work">
+      <div class="tradelist">
+        ${group('Closed this week', weekTrades())}
+        ${group('Unreviewed from earlier', strag, `· ${strag.length} waiting`)}
+        ${group('Open', open)}
+      </div>
+      <div>${t.state === 'closed' ? closedDetail(t) : openDetail(t)}</div>
+    </section>`;
+}
+
+const VARIANTS = {
+  D: { name: 'The landing', render: variantD,
+       blurb: "Settled on #13: C's exit workbench with A's attention banner, a thin by-book strip of counts (never rates), a strict week plus open Trades plus unreviewed stragglers, one mixed list, and actions that write straight through." },
+  A: { name: "The week's tape",  render: variantA,
+       blurb: 'Outcome-led and chronological. Both books side by side, closed Trades only, read-only. Attention rides as a banner on top.' },
+  B: { name: 'Process scorecard', render: variantB,
+       blurb: 'Process-led. Groupings are first-class axes, the window is rolling so n survives, one book at a time. Outcome is a footnote; attention is a separate always-on rail.' },
+  C: { name: 'Exit workbench',   render: variantC,
+       blurb: 'Excursion-led. One Trade at a time on a day-by-day timeline against the nominal variant, open Trades included, and the surface carries actions.' }
+};
+const KEYS = Object.keys(VARIANTS);
+
+function current() {
+  const v = new URLSearchParams(location.search).get('variant');
+  return KEYS.includes(v) ? v : 'D';
+}
+function go(k) {
+  const u = new URL(location.href);
+  u.searchParams.set('variant', k);
+  history.replaceState({}, '', u);
+  draw();
+}
+function draw() {
+  const k = current(), v = VARIANTS[k];
+  document.getElementById('root').innerHTML = v.render();
+  document.getElementById('blurb').textContent = v.blurb;
+  document.getElementById('swlabel').innerHTML = `${k} <small>${v.name}</small>`;
+  document.title = `PROTOTYPE — ${k}: ${v.name}`;
+  wire();
+}
+function wire() {
+  document.querySelectorAll('.bk').forEach(b => b.onclick = () => { bState.book = b.dataset.bk; draw(); });
+  document.querySelectorAll('.wn').forEach(b => b.onclick = () => { bState.window = b.dataset.wn; draw(); });
+  document.querySelectorAll('.ti').forEach(b => b.onclick = () => {
+    if (b.dataset.did) dSel = b.dataset.did; else cSel = b.dataset.id;
+    draw();
+  });
+}
+function cycle(d) {
+  const i = KEYS.indexOf(current());
+  go(KEYS[(i + d + KEYS.length) % KEYS.length]);
+}
+document.getElementById('prev').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+document.addEventListener('keydown', e => {
+  const t = e.target.tagName;
+  if (t === 'INPUT' || t === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+draw();
+</script>
+</body>
+</html>
