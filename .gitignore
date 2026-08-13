@@ -8,3 +8,13 @@ ibkr-nav.xml
 .env
 .DS_Store
 ibkr-flex-sample.xml
+
+# Build skeleton
+node_modules/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+deploy/**/logs/
+__pycache__/
+*.pyc

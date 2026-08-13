@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# The `journal` command (SPEC §13.7 seam 1): a plain idempotent CLI that any
+# scheduler calls. launchd invokes this; nothing macOS-specific lives here.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="${here}/..:${PYTHONPATH:-}"
+exec python3 -m journal "$@"
