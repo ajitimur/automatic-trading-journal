@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from datetime import date
 
 from journal import secrets
 
@@ -35,6 +36,27 @@ class SecretsTest(unittest.TestCase):
         source = inspect.getsource(secrets)
         for forbidden in ("security find-generic-password", "/usr/bin/security", "Keychain"):
             self.assertNotIn(forbidden, source)
+
+
+class TokenExpiryTest(unittest.TestCase):
+    """Expiry is a stated fact the job can surface before the token dies.
+
+    Regenerating a token invalidates the current one (SPEC §13.4), so the job
+    must never do that itself — it can only warn a human in time.
+    """
+
+    def test_expiry_is_the_stated_date(self):
+        self.assertEqual(secrets.IBKR_FLEX_TOKEN_EXPIRES, "2027-07-14")
+
+    def test_days_until_expiry_counts_down(self):
+        self.assertEqual(
+            secrets.days_until_token_expiry(date(2027, 7, 4)), 10
+        )
+
+    def test_expiry_in_the_past_is_negative(self):
+        self.assertEqual(
+            secrets.days_until_token_expiry(date(2027, 7, 15)), -1
+        )
 
 
 if __name__ == "__main__":

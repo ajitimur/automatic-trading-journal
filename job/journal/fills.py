@@ -51,6 +51,16 @@ def insert_fills(conn: sqlite3.Connection, records: Iterable[flex.Fill]) -> int:
     return inserted
 
 
+def import_flex_text(conn: sqlite3.Connection, xml_text: str) -> int:
+    """Parse a Flex XML string and append its Fills to the ledger.
+
+    The single body path for both a file on disk and a statement just fetched
+    over the wire. Returns the number newly inserted; raises
+    :class:`flex.FlexError` on an error body rather than a statement (SPEC §4.1).
+    """
+    return insert_fills(conn, flex.parse_flex(xml_text))
+
+
 def import_flex_file(conn: sqlite3.Connection, path: str) -> int:
     """Parse a Flex XML file on disk and append its Fills to the ledger.
 
@@ -58,5 +68,4 @@ def import_flex_file(conn: sqlite3.Connection, path: str) -> int:
     file is an error body rather than a statement (SPEC §4.1).
     """
     with open(path, encoding="utf-8") as fh:
-        parsed = flex.parse_flex(fh.read())
-    return insert_fills(conn, parsed)
+        return import_flex_text(conn, fh.read())

@@ -17,6 +17,11 @@ npm run job -- run                 # or: job/bin/journal run
 # execution row; re-dropping the same file is idempotent (SPEC §4.1).
 npm run job -- import docs/samples/ibkr-flex-schema-fixture.xml
 
+# Fetch the same query unattended over the wire — DNS resolved over DoH per
+# host, interception caught by mismatch, error bodies surfaced not swallowed
+# (SPEC §13.3). Needs JOURNAL_SECRET_IBKR_FLEX_TOKEN and network.
+npm run job -- fetch <activity-flex-query-id>
+
 # Derive Trades from Fills through the one confirm door (SPEC §5.1). Buys group
 # into entry-day cohorts (ADR 0001); sells allocate FIFO across open Trades.
 # --dry-run shows the proposals and commits nothing; re-confirming is a no-op.

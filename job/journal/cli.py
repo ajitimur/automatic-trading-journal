@@ -10,7 +10,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from . import db, fills, flex, trades
+from . import db, fills, flex, flex_client, secrets, trades
 from .run import RunResult, execute_run
 
 
@@ -101,6 +101,43 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_flex_client(warn):
+    # A seam: the real DoH resolver + HTTP transport are assembled here, and
+    # tests substitute a fake so the wire is never touched.
+    return flex_client.build_default_client(warn=warn)
+
+
+def cmd_fetch(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    warnings: list[str] = []
+    client = _build_flex_client(warn=warnings.append)
+    try:
+        statement = client.fetch_statement(args.query_id)
+        inserted = fills.import_flex_text(conn, statement)
+        total = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
+    except (
+        flex.FlexError,
+        flex_client.InterceptionError,
+        flex_client.EmptyResponseError,
+        secrets.SecretNotFound,
+    ) as exc:
+        # The network path lies (SPEC §13.3): a Flex error body, DNS
+        # interception, an empty series or a missing token are all failures to
+        # surface loudly, not empty statements to swallow.
+        print(f"fetch failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    for notice in warnings:
+        print(notice, file=sys.stderr)
+    print(
+        f"fetched {inserted} new fill(s) from Flex query {args.query_id}"
+        f"  ({total} in ledger)"
+    )
+    return 0
+
+
 def _add_db_argument(subparser: argparse.ArgumentParser) -> None:
     # Both subcommands take the same store path; keep the one help string here.
     subparser.add_argument(
@@ -145,6 +182,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(confirm_p)
     confirm_p.set_defaults(func=cmd_confirm)
+
+    fetch_p = sub.add_parser(
+        "fetch",
+        help="fetch the IBKR Activity Flex Query over the wire into the ledger",
+    )
+    fetch_p.add_argument(
+        "query_id", help="the saved Activity Flex Query id (Executions level of detail)"
+    )
+    _add_db_argument(fetch_p)
+    fetch_p.set_defaults(func=cmd_fetch)
     return parser
 
 
