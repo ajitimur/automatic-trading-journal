@@ -1,0 +1,10 @@
+# Raw broker documents must never be committed — they carry account numbers,
+# names, tax ids and balances. Only redacted derivatives belong in docs/samples.
+# See docs/samples/equity-sources-findings.md.
+TC_*.pdf
+*_soa*.pdf
+ibkr-flex.xml
+ibkr-nav.xml
+.env
+.DS_Store
+ibkr-flex-sample.xml
