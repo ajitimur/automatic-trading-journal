@@ -6,6 +6,9 @@ scheduler on any host substitutes without touching the job.
 
 ## Install
 
+0. Install the job's Python dependencies (yfinance, the one bar source behind
+   the seam — §4.4): `pip install -r job/requirements.txt`.
+
 1. Point the store and the one secret at real locations — both resolve through
    indirection, nothing is hardcoded in the job (§13.4, §13.7):
 
