@@ -10,7 +10,10 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from . import db, fills, flex, flex_client, secrets, trades
+import csv
+from datetime import datetime, timezone
+
+from . import db, equity, fills, flex, flex_client, secrets, trades
 from .run import RunResult, execute_run
 
 
@@ -138,6 +141,98 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _today_iso() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def cmd_import_nav(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        with open(args.file, encoding="utf-8") as fh:
+            captured = equity.import_nav_flex_text(conn, fh.read(), fetch_date=_today_iso())
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM equity_snapshot WHERE book='US'"
+        ).fetchone()["n"]
+    except equity.EquityError as exc:
+        # A NAV error body is an error, never an empty series (SPEC §9.2).
+        print(f"NAV import failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"captured {captured} NAV snapshot(s) from {args.file}  ({total} US snapshots)")
+    return 0
+
+
+def cmd_fetch_nav(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    warnings: list[str] = []
+    client = _build_flex_client(warn=warnings.append)
+    try:
+        statement = client.fetch_statement(args.query_id)
+        captured = equity.import_nav_flex_text(conn, statement, fetch_date=_today_iso())
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM equity_snapshot WHERE book='US'"
+        ).fetchone()["n"]
+    except (
+        equity.EquityError,
+        flex.FlexError,
+        flex_client.InterceptionError,
+        flex_client.EmptyResponseError,
+        secrets.SecretNotFound,
+    ) as exc:
+        # The NAV XML joins the keep-forever tier only once it is captured; a
+        # failed fetch surfaces loudly rather than recording "no equity".
+        print(f"NAV fetch failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    for notice in warnings:
+        print(notice, file=sys.stderr)
+    print(
+        f"captured {captured} NAV snapshot(s) from Flex query {args.query_id}"
+        f"  ({total} US snapshots)"
+    )
+    return 0
+
+
+def cmd_equity_idx(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        if args.file:
+            with open(args.file, encoding="utf-8", newline="") as fh:
+                rows = list(csv.DictReader(fh))
+            written = equity.record_idx_series(conn, rows, fetch_date=_today_iso())
+        else:
+            if args.date is None or args.portfolio is None or args.ledger_balance is None:
+                raise ValueError(
+                    "single entry needs --date, --portfolio and --ledger-balance "
+                    "(or pass --file for a month-end series)"
+                )
+            equity.record_idx_snapshot(
+                conn,
+                date=args.date,
+                portfolio=args.portfolio,
+                ledger_balance=args.ledger_balance,
+                cash_investor=args.cash_investor,
+                provenance="estimated" if args.estimated else "stated",
+                fetch_date=_today_iso(),
+            )
+            written = 1
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM equity_snapshot WHERE book='IDX'"
+        ).fetchone()["n"]
+    except (KeyError, ValueError) as exc:
+        print(f"IDX equity entry failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"recorded {written} IDX snapshot(s)  ({total} IDX snapshots)")
+    return 0
+
+
 def _add_db_argument(subparser: argparse.ArgumentParser) -> None:
     # Both subcommands take the same store path; keep the one help string here.
     subparser.add_argument(
@@ -192,6 +287,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(fetch_p)
     fetch_p.set_defaults(func=cmd_fetch)
+
+    import_nav_p = sub.add_parser(
+        "import-nav",
+        help="capture an IBKR NAV Summary in Base Flex XML file as EquitySnapshots",
+    )
+    import_nav_p.add_argument("file", help="path to the NAV Flex XML file on disk")
+    _add_db_argument(import_nav_p)
+    import_nav_p.set_defaults(func=cmd_import_nav)
+
+    fetch_nav_p = sub.add_parser(
+        "fetch-nav",
+        help="fetch the second (NAV Summary in Base) Flex query and capture snapshots",
+    )
+    fetch_nav_p.add_argument(
+        "query_id", help="the saved NAV Summary in Base Flex query id (a second query)"
+    )
+    _add_db_argument(fetch_nav_p)
+    fetch_nav_p.set_defaults(func=cmd_fetch_nav)
+
+    idx_p = sub.add_parser(
+        "equity-idx",
+        help="hand-enter IDX EquitySnapshot(s) — one, or a month-end series from CSV",
+    )
+    idx_p.add_argument(
+        "--file",
+        default=None,
+        help="CSV of a month-end series (columns: date,portfolio,ledger_balance"
+        "[,cash_investor][,provenance]) — entered in one sitting (SPEC §9.6)",
+    )
+    idx_p.add_argument("--date", metavar="YYYY-MM-DD", help="snapshot date (single entry)")
+    idx_p.add_argument("--portfolio", type=float, help="Portfolio figure (single entry)")
+    idx_p.add_argument(
+        "--ledger-balance", type=float, dest="ledger_balance",
+        help="ledger closing balance (single entry)",
+    )
+    idx_p.add_argument(
+        "--cash-investor", type=float, dest="cash_investor", default=None,
+        help="Cash Investor figure (stored for the deferred denominator question)",
+    )
+    idx_p.add_argument(
+        "--estimated", action="store_true",
+        help="mark provenance 'estimated' (typed from memory) rather than 'stated'",
+    )
+    _add_db_argument(idx_p)
+    idx_p.set_defaults(func=cmd_equity_idx)
     return parser
 
 
