@@ -138,6 +138,53 @@ class CliTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 1)
         conn.close()
 
+    def test_bulk_confirm_commits_exits_only(self):
+        self._seed_buy()
+        self._confirm()  # land the AAA Trade
+        conn = db.connect(self.db_path)
+        fills.insert_fills(conn, [
+            flex.Fill(
+                source="ibkr", source_ref="s1", revision=1, book="US",
+                symbol="AAA", side="SELL", quantity=-100.0, price=12.0,
+                commission=0.0, executed_at="2026-08-07T10:00:00-04:00", order_id="o2",
+            )
+        ])
+        conn.close()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["bulk-confirm", "--db", self.db_path])
+        self.assertEqual(code, 0)
+        self.assertIn("bulk-confirmed 1 exit", buf.getvalue())
+
+        conn = db.connect(self.db_path)
+        row = conn.execute("SELECT reason FROM trade_exit").fetchone()
+        conn.close()
+        self.assertEqual(row["reason"], "close_below_ma10")  # the proposed default
+
+    def test_remember_symbol_repairs_a_committed_trade(self):
+        conn = db.connect(self.db_path)
+        fills.insert_fills(conn, [
+            flex.Fill(
+                source="stockbit", source_ref="w1", revision=1, book="IDX",
+                symbol="WRNG", side="BUY", quantity=100.0, price=10.0,
+                commission=0.0, executed_at="2026-08-03T09:30:00-04:00", order_id="o1",
+            )
+        ])
+        conn.close()
+        self._confirm()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["remember-symbol", "stockbit", "WRNG", "RIGHT", "--db", self.db_path])
+        self.assertEqual(code, 0)
+        self.assertIn("1 committed Trade(s) repaired", buf.getvalue())
+
+        conn = db.connect(self.db_path)
+        symbols = [r["symbol"] for r in conn.execute("SELECT symbol FROM trade")]
+        conn.close()
+        self.assertEqual(symbols, ["RIGHT"])
+
     def _trade_id(self):
         conn = db.connect(self.db_path)
         tid = conn.execute("SELECT id FROM trade").fetchone()["id"]

@@ -152,11 +152,11 @@ class TradesTest(unittest.TestCase):
             self.conn.execute("SELECT COUNT(*) AS n FROM trade_exit").fetchone()["n"], 1
         )
 
-    # ── A sell with no journalled entry parks, never guesses (SPEC §5.3) ──
+    # ── A sell with no journalled entry parks, never guesses (SPEC §5.2) ──
     def test_orphan_exit_parks(self):
         fills.insert_fills(self.conn, [_sell("s1", "AAA", 100, 25.0, "2026-08-07T10:00:00-04:00")])
-        (proposal,) = [p for p in trades.propose(self.conn) if p.kind == "exit-allocation"]
-        self.assertEqual(proposal.over_allocated, 100)
+        (proposal,) = [p for p in trades.propose(self.conn) if p.kind == "orphan-exit"]
+        self.assertTrue(proposal.blocked)  # nothing open — parks
 
         result = trades.confirm(self.conn)
         self.assertEqual(result.parked_exits, 1)

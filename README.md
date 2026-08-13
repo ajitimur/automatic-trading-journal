@@ -28,11 +28,25 @@ npm run job -- drop docs/samples/stockbit-tc-fixture.txt
 # (SPEC §13.3). Needs JOURNAL_SECRET_IBKR_FLEX_TOKEN and network.
 npm run job -- fetch <activity-flex-query-id>
 
-# Derive Trades from Fills through the one confirm door (SPEC §5.1). Buys group
-# into entry-day cohorts (ADR 0001); sells allocate FIFO across open Trades.
-# --dry-run shows the proposals and commits nothing; re-confirming is a no-op.
+# Derive Trades from Fills through the one confirm door (SPEC §5). Every failure
+# is one of eight proposal kinds, never an exception (new-trade · add-fills ·
+# exit-allocation · restatement · quarantine · orphan-exit · enrichment-repair ·
+# drift). Blocked items (orphan exits, unfillable sells) park and confirm skips
+# them, so one bad item never stalls the batch. Re-confirming re-derives, so a
+# parked orphan clears itself once its missing Trade is entered by hand (RECHECK).
 npm run job -- confirm --dry-run
 npm run job -- confirm
+
+# Bulk-confirm exit reasons only (SPEC §5.8): a week of statements is mostly
+# agreeing with the proposed reasons. New Trades stay one-at-a-time; parked
+# items are left alone.
+npm run job -- bulk-confirm
+
+# A fact once, a rule forever (SPEC §5.4): a wrong symbol is a parser *rule* —
+# remembered, applied to every future statement before it reaches the queue, and
+# it repairs Trades already committed under the wrong symbol. (A wrong quantity
+# is a *fact* about one fill, corrected in place and never remembered.)
+npm run job -- remember-symbol stockbit MEDC MEDCX
 
 # Chase the two hand-entered fields (SPEC §3.2/§5.5) — the only typed values in
 # the system. Confirm demands neither; a Trade commits without them. The stop's

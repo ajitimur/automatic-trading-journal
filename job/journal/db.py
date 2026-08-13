@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -113,7 +113,24 @@ CREATE TABLE IF NOT EXISTS trade_exit (
     source_ref TEXT NOT NULL,       -- the sell Fill's logical execution
     exit_date  TEXT NOT NULL,
     quantity   REAL NOT NULL,       -- positive shares allocated to this Trade
-    price      REAL NOT NULL
+    price      REAL NOT NULL,
+    reason     TEXT                 -- exit reason (SPEC §5.8): proposed from bars,
+                                    -- accepted in bulk, overridable on the review surface
+);
+
+-- Remembered parse rules — "a fact once, a rule forever" (SPEC §5.4, #27). A
+-- wrong *quantity* is a fact about one fill (corrected in place as a new Fill
+-- revision, never remembered); a wrong *symbol* is a *rule* about the parser,
+-- remembered here and applied to every future statement **before it reaches the
+-- confirm queue**, and used to repair Trades already committed under the wrong
+-- symbol. Keyed (source, from_symbol) so one remap is stored once per broker.
+CREATE TABLE IF NOT EXISTS parse_rule (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source      TEXT NOT NULL,      -- 'stockbit' | 'ibkr' — the parser the rule corrects
+    from_symbol TEXT NOT NULL,      -- the symbol as mis-parsed
+    to_symbol   TEXT NOT NULL,      -- the symbol it should be
+    created_at  TEXT NOT NULL,
+    UNIQUE (source, from_symbol)
 );
 
 -- The local bar cache (SPEC §4.4, #24). A trading-day axis: rows are
@@ -295,6 +312,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _migrate_fill_columns(conn)
     _migrate_trade_columns(conn)
+    _migrate_trade_exit_columns(conn)
     conn.commit()
     return conn
 
@@ -343,3 +361,19 @@ def _migrate_trade_columns(conn: sqlite3.Connection) -> None:
     for name, decl in _TRADE_COLUMNS.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE trade ADD COLUMN {name} {decl}")
+
+
+# The exit reason added for the full confirm queue (#27). An earlier build
+# created `trade_exit` without it; bring it forward with the same non-destructive
+# ALTER. Nullable, because a reason is proposed at confirm and may be left at the
+# proposal until the review surface overrides it (SPEC §5.8).
+_TRADE_EXIT_COLUMNS = {
+    "reason": "TEXT",
+}
+
+
+def _migrate_trade_exit_columns(conn: sqlite3.Connection) -> None:
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(trade_exit)")}
+    for name, decl in _TRADE_EXIT_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE trade_exit ADD COLUMN {name} {decl}")

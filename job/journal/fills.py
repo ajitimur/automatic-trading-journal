@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable
 
-from . import flex, stockbit
+from . import flex, stockbit, trades
 
 _INSERT = """
 INSERT OR IGNORE INTO fill
@@ -57,8 +57,10 @@ def import_flex_text(conn: sqlite3.Connection, xml_text: str) -> int:
     The single body path for both a file on disk and a statement just fetched
     over the wire. Returns the number newly inserted; raises
     :class:`flex.FlexError` on an error body rather than a statement (SPEC §4.1).
+    Remembered symbol rules are applied here, before anything reaches the confirm
+    queue (SPEC §5.4).
     """
-    return insert_fills(conn, flex.parse_flex(xml_text))
+    return insert_fills(conn, trades.apply_symbol_rules(conn, list(flex.parse_flex(xml_text))))
 
 
 def import_flex_file(conn: sqlite3.Connection, path: str) -> int:
@@ -78,9 +80,10 @@ def import_stockbit_text(conn: sqlite3.Connection, tc_text: str) -> int:
     document that does not reconcile raises :class:`stockbit.QuarantineError`
     before any row is returned — nothing lands. Returns the number newly
     inserted; the content-hash ``source_ref`` makes re-dropping the same TC a
-    no-op (SPEC §4.2).
+    no-op (SPEC §4.2). Remembered symbol rules are applied before insert, so a
+    misparse fixed once is corrected on every future drop (SPEC §5.4).
     """
-    return insert_fills(conn, stockbit.parse_tc_text(tc_text))
+    return insert_fills(conn, trades.apply_symbol_rules(conn, stockbit.parse_tc_text(tc_text)))
 
 
 def import_stockbit_file(conn: sqlite3.Connection, path: str) -> int:

@@ -85,16 +85,25 @@ def cmd_drop(args: argparse.Namespace) -> int:
 
 
 def _format_proposal(p: trades.Proposal) -> str:
-    if p.kind == "new-trade":
+    park = " [parked]" if p.blocked else ""
+    if p.kind in ("new-trade", "add-fills", "restatement", "drift"):
+        avg = f"{p.avg_price:.4f}" if p.avg_price is not None else "?"
         return (
-            f"  new-trade   {p.book} {p.symbol} {p.entry_date}  "
-            f"{p.quantity:g} @ {p.avg_price:.4f}  — {p.note}"
+            f"  {p.kind:<16}{park} {p.book} {p.symbol} {p.entry_date}  "
+            f"{p.quantity:g} @ {avg}  — {p.note}"
         )
-    where = ", ".join(f"{a.quantity:g}→{a.entry_date}" for a in p.allocations) or "nothing open"
-    return (
-        f"  exit-alloc  {p.book} {p.symbol} {p.exit_date}  "
-        f"{p.quantity:g} @ {p.price}  [{where}]  — {p.note}"
-    )
+    if p.kind in ("exit-allocation", "orphan-exit"):
+        where = ", ".join(f"{a.quantity:g}→{a.entry_date}" for a in p.allocations) or "nothing open"
+        reason = f"  reason:{p.proposed_reason}" if p.proposed_reason else ""
+        return (
+            f"  {p.kind:<16}{park} {p.book} {p.symbol} {p.exit_date}  "
+            f"{p.quantity:g} @ {p.price}  [{where}]{reason}  — {p.note}"
+        )
+    if p.kind == "enrichment-repair":
+        return f"  {p.kind:<16}{park} {p.book} {p.symbol} {p.entry_date}  — {p.note}"
+    if p.kind == "quarantine":
+        return f"  {p.kind:<16}{park}  — {p.detail}"
+    return f"  {p.kind:<16}{park} {p.book} {p.symbol}  — {p.note}"
 
 
 def cmd_confirm(args: argparse.Namespace) -> int:
@@ -114,13 +123,55 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         result = trades.confirm(conn)
     finally:
         conn.close()
+    extra = "".join(
+        f", {n} {label}"
+        for n, label in (
+            (result.added_fills, "add-fills"),
+            (result.restatements, "restated"),
+            (result.drifts, "drift"),
+        )
+        if n
+    )
     print(
         f"confirmed: {result.new_trades} new Trade(s), "
-        f"{result.exits_allocated} exit(s) allocated"
+        f"{result.exits_allocated} exit(s) allocated" + extra
         + (f", {result.parked_exits} parked" if result.parked_exits else "")
     )
     for closed in result.closed_trades:
         print(f"  closed: {closed}")
+    return 0
+
+
+def cmd_bulk_confirm(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        result = trades.bulk_confirm_exits(conn)
+    finally:
+        conn.close()
+    # Exit reasons only (SPEC §5.8): new Trades and parked items are left alone.
+    print(
+        f"bulk-confirmed {result.exits_allocated} exit(s) at their proposed reasons "
+        "— new Trades and parked items untouched"
+    )
+    for closed in result.closed_trades:
+        print(f"  closed: {closed}")
+    return 0
+
+
+def cmd_remember_symbol(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        repaired = trades.remember_symbol_rule(conn, args.source, args.from_symbol, args.to_symbol)
+    finally:
+        conn.close()
+    # A rule forever (SPEC §5.4): applied pre-queue on every future statement,
+    # and it repairs Trades already committed under the wrong symbol.
+    print(
+        f"remembered {args.source}: {args.from_symbol} -> {args.to_symbol}  "
+        f"({repaired} committed Trade(s) repaired)"
+    )
     return 0
 
 
@@ -338,6 +389,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(confirm_p)
     confirm_p.set_defaults(func=cmd_confirm)
+
+    bulk_p = sub.add_parser(
+        "bulk-confirm",
+        help="confirm every confirmable exit at its proposed reason (SPEC §5.8) — "
+        "new Trades and parked items untouched",
+    )
+    _add_db_argument(bulk_p)
+    bulk_p.set_defaults(func=cmd_bulk_confirm)
+
+    remember_p = sub.add_parser(
+        "remember-symbol",
+        help="remember a symbol misparse as a parser rule and repair committed Trades (SPEC §5.4)",
+    )
+    remember_p.add_argument("source", help="the parser the rule corrects (e.g. 'stockbit', 'ibkr')")
+    remember_p.add_argument("from_symbol", help="the symbol as mis-parsed")
+    remember_p.add_argument("to_symbol", help="the symbol it should be")
+    _add_db_argument(remember_p)
+    remember_p.set_defaults(func=cmd_remember_symbol)
 
     stop_p = sub.add_parser(
         "stop",
