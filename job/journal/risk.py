@@ -175,21 +175,30 @@ def compute(
     )
 
 
-def compute_for_trade(conn: sqlite3.Connection, trade_id: int) -> RiskExposure:
-    """Compute Risk % and Exposure % for a Trade by id (reads the ``trade`` row)."""
-    row = conn.execute(
-        "SELECT id, book, entry_date, entry_qty, entry_avg_price, stop "
-        "FROM trade WHERE id = ?",
-        (trade_id,),
-    ).fetchone()
-    if row is None:
-        raise ValueError(f"no Trade with id {trade_id}")
+# The Trade columns Risk % and Exposure % need — selected identically whether we
+# resolve one Trade by id or every Trade on a book.
+_TRADE_COLUMNS = "id, book, entry_date, entry_qty, entry_avg_price, stop"
+
+
+def _compute_row(conn: sqlite3.Connection, row: sqlite3.Row) -> RiskExposure:
+    """Compute one :class:`RiskExposure` from a ``trade`` row — the shared mapping."""
     return compute(
         conn,
         trade_id=row["id"], book=row["book"], entry_date=row["entry_date"],
         entry_qty=row["entry_qty"], entry_avg_price=row["entry_avg_price"],
         stop=row["stop"],
     )
+
+
+def compute_for_trade(conn: sqlite3.Connection, trade_id: int) -> RiskExposure:
+    """Compute Risk % and Exposure % for a Trade by id (reads the ``trade`` row)."""
+    row = conn.execute(
+        f"SELECT {_TRADE_COLUMNS} FROM trade WHERE id = ?",
+        (trade_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"no Trade with id {trade_id}")
+    return _compute_row(conn, row)
 
 
 def compute_book(conn: sqlite3.Connection, book: str) -> List[RiskExposure]:
@@ -199,19 +208,10 @@ def compute_book(conn: sqlite3.Connection, book: str) -> List[RiskExposure]:
     a time and the aggregate never mixes two denominators.
     """
     rows = conn.execute(
-        "SELECT id, book, entry_date, entry_qty, entry_avg_price, stop "
-        "FROM trade WHERE book = ? ORDER BY entry_date, id",
+        f"SELECT {_TRADE_COLUMNS} FROM trade WHERE book = ? ORDER BY entry_date, id",
         (book,),
     ).fetchall()
-    return [
-        compute(
-            conn,
-            trade_id=r["id"], book=r["book"], entry_date=r["entry_date"],
-            entry_qty=r["entry_qty"], entry_avg_price=r["entry_avg_price"],
-            stop=r["stop"],
-        )
-        for r in rows
-    ]
+    return [_compute_row(conn, r) for r in rows]
 
 
 @dataclass(frozen=True)
