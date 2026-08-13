@@ -27,8 +27,16 @@ One of the two markets the journal covers, US or IDX, carrying its currency, ben
 _Avoid_: Account, portfolio, market
 
 **Equity Snapshot**:
-The account equity on a book as of a given date. The most recent snapshot at or before a Trade's entry date is what its risk percentage is measured against.
-_Avoid_: Balance, capital, NAV
+What a Book was worth on a given date, marked to market. The most recent snapshot at or before a Trade's entry date is what its Risk Percentage and Exposure Percentage are measured against. Dated on the calendar rather than in Trading Days, and captured from the source that reported it rather than derived on demand — a broker window that only reaches back a year would otherwise take the journal's own history with it when it moves. Each snapshot states where its number came from and keeps the components it was read from, so the choice of which figure counts as equity stays revisable.
+_Avoid_: Balance, capital, NAV, deposited capital
+
+**Equity NAB**:
+The account equity figure the Indonesian broker prints on its monthly statement: the valued portfolio plus the settled ledger balance. Excludes a separate cash pool the statement carries but does not explain, which is why the components are kept beside it.
+_Avoid_: NAV, net asset value (the US broker's term for its own figure is different), balance
+
+**Staleness Bound**:
+How far back a lookup may reach for an Equity Snapshot before the journal refuses to answer. Stated per Book and in calendar days, because the two books record equity at incomparable cadences. Past it, Risk Percentage and Exposure Percentage are null with a marker rather than computed against a level that no longer describes the Book — a wrong denominator is worse than a missing one, because it still passes the test it should fail.
+_Avoid_: Timeout, expiry, TTL, freshness
 
 ### Trade properties
 
@@ -53,11 +61,11 @@ Whether a Trade's stop was recorded before its first Exit, or reconstructed from
 _Avoid_: Confidence, backdated flag
 
 **Risk Percentage**:
-What fraction of book equity the Trade put at risk, measured from the entry price down to the stop. Derived.
+What fraction of book equity the Trade put at risk, measured from the entry price down to the stop. Derived, and undefined where no Equity Snapshot sits within the Staleness Bound of the entry date. Never available on the day of entry — every source reports equity in arrears.
 _Avoid_: Risk, position risk
 
 **Exposure Percentage**:
-What fraction of book equity the Trade's cost represented, regardless of stop. Derived.
+What fraction of book equity the Trade's cost represented, regardless of stop. Derived, and reads the same Equity Snapshot as the Risk Percentage under the same conditions — one denominator asked a second question, never a second denominator.
 _Avoid_: Size, allocation
 
 **Realized R**:
