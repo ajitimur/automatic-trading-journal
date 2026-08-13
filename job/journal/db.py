@@ -221,6 +221,46 @@ CREATE TABLE IF NOT EXISTS trade_enrichment (
     avg_turnover_20d     REAL,              -- native currency, NULL if < 20 bars
     insufficient_history TEXT NOT NULL DEFAULT ''  -- comma-joined nulled field names
 );
+
+-- The keep-forever raw tier (SPEC §13.5, #31). Raw source documents as fetched
+-- or dropped — Flex NAV XML today, SoA/TC PDFs later — kept verbatim so the DB
+-- stays reconstructible and a parser fix can be re-run over history. It is what
+-- lets the rolling-365 IBKR NAV window survive: once a reportDate ages out of
+-- the reachable window it is gone from Flex, but the captured XML stays here.
+CREATE TABLE IF NOT EXISTS raw_document (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    book       TEXT NOT NULL,
+    kind       TEXT NOT NULL,      -- 'nav-flex-xml' | 'soa-pdf' | ...
+    fetched_at TEXT NOT NULL,      -- when it was captured
+    content    TEXT NOT NULL       -- the raw document, verbatim
+);
+
+-- The risk/exposure denominator, and nothing more (SPEC §9). Mark-to-market
+-- NAV, not deposited capital; one job, not the book's equity curve. Identity is
+-- (book, date) on a *calendar* axis (§9.5) — a NAV row exists on days nothing
+-- traded, so this never joins the trading-day bar cache by counting rows.
+-- `equity` is the stored denominator, captured and persisted, never re-derived
+-- (§9.2): IBKR's `total` and IDX's Equity NAB. Components are book-specific and
+-- stored beside it (§9.3) so switching the IDX denominator is a config change
+-- rather than a re-read of PDFs: US carries `cash`/`stock`, IDX `portfolio`/
+-- `ledger_balance`/`cash_investor`. `provenance` is 'stated' | 'estimated'
+-- (§9.3); `raw_ref` points at the keep-forever document the row was read from.
+-- Both books write straight through here — no confirm queue (§9.7).
+CREATE TABLE IF NOT EXISTS equity_snapshot (
+    book           TEXT NOT NULL,
+    date           TEXT NOT NULL,      -- calendar axis (§9.5), ISO 8601
+    equity         REAL NOT NULL,      -- the denominator: IBKR total, IDX Equity NAB
+    provenance     TEXT NOT NULL DEFAULT 'stated',   -- 'stated' | 'estimated'
+    source         TEXT NOT NULL,      -- 'ibkr' | 'idx'
+    fetch_date     TEXT,               -- when captured/typed
+    raw_ref        INTEGER REFERENCES raw_document(id),
+    cash           REAL,               -- US component
+    stock          REAL,               -- US component
+    portfolio      REAL,               -- IDX component
+    ledger_balance REAL,               -- IDX component
+    cash_investor  REAL,               -- IDX component
+    PRIMARY KEY (book, date)
+);
 """
 
 

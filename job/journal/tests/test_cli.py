@@ -20,6 +20,7 @@ SAMPLES = os.path.join(
 FIXTURE = os.path.join(SAMPLES, "ibkr-flex-schema-fixture.xml")
 TC_FIXTURE = os.path.join(SAMPLES, "stockbit-tc-fixture.txt")
 TC_SHIFTED = os.path.join(SAMPLES, "stockbit-tc-column-shift-fixture.txt")
+NAV_FIXTURE = os.path.join(SAMPLES, "ibkr-nav-flex-schema-fixture.xml")
 
 
 class CliTest(unittest.TestCase):
@@ -212,6 +213,72 @@ class CliTest(unittest.TestCase):
         code, _out, err = self._fetch(client)
         self.assertEqual(code, 1)
         self.assertIn("mismatch", err)
+
+    # --- EquitySnapshot: NAV capture and IDX hand entry (issue #31) ---
+
+    def _fetch_nav(self, client):
+        buf, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "_build_flex_client", return_value=client):
+            with redirect_stdout(buf), redirect_stderr(err):
+                code = main(["fetch-nav", "NAVQUERY", "--db", self.db_path])
+        return code, buf.getvalue(), err.getvalue()
+
+    def test_fetch_nav_captures_snapshots_from_a_second_query(self):
+        with open(NAV_FIXTURE, encoding="utf-8") as fh:
+            statement = fh.read()
+        client = mock.Mock()
+        client.fetch_statement.return_value = statement
+
+        code, out, _ = self._fetch_nav(client)
+        self.assertEqual(code, 0)
+        client.fetch_statement.assert_called_once_with("NAVQUERY")
+        self.assertIn("3", out)
+
+        conn = db.connect(self.db_path)
+        snaps = conn.execute("SELECT COUNT(*) AS n FROM equity_snapshot WHERE book='US'").fetchone()["n"]
+        raw = conn.execute("SELECT COUNT(*) AS n FROM raw_document WHERE kind='nav-flex-xml'").fetchone()["n"]
+        conn.close()
+        self.assertEqual(snaps, 3)
+        self.assertEqual(raw, 1)
+
+    def test_import_nav_captures_a_file(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["import-nav", NAV_FIXTURE, "--db", self.db_path])
+        self.assertEqual(code, 0)
+        self.assertIn("3", buf.getvalue())
+
+    def test_equity_idx_single_entry_writes_straight_through(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main([
+                "equity-idx", "--db", self.db_path,
+                "--date", "2026-07-31", "--portfolio", "800", "--ledger-balance", "200",
+            ])
+        self.assertEqual(code, 0)
+        conn = db.connect(self.db_path)
+        row = conn.execute(
+            "SELECT equity FROM equity_snapshot WHERE book='IDX' AND date='2026-07-31'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["equity"], 1000.0)
+
+    def test_equity_idx_month_end_series_from_csv_in_one_sitting(self):
+        csv_path = os.path.join(self.tmp.name, "series.csv")
+        with open(csv_path, "w", encoding="utf-8") as fh:
+            fh.write("date,portfolio,ledger_balance,cash_investor,provenance\n")
+            fh.write("2026-07-31,800,200,50,stated\n")
+            fh.write("2026-06-30,780,190,,stated\n")
+            fh.write("2026-05-31,770,180,,estimated\n")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["equity-idx", "--file", csv_path, "--db", self.db_path])
+        self.assertEqual(code, 0)
+        self.assertIn("3", buf.getvalue())
+        conn = db.connect(self.db_path)
+        n = conn.execute("SELECT COUNT(*) AS n FROM equity_snapshot WHERE book='IDX'").fetchone()["n"]
+        conn.close()
+        self.assertEqual(n, 3)
 
 
 if __name__ == "__main__":

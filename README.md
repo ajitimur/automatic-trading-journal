@@ -41,6 +41,19 @@ npm run job -- confirm
 npm run job -- stop  <trade-id> <price>
 npm run job -- setup <trade-id> base_breakout   # | high_tight_flag | other
 
+# Capture IBKR NAV as EquitySnapshots — the risk/exposure denominator, not the
+# equity curve (SPEC §9). A *second* Flex query (NAV Summary in Base): every
+# reportDate row becomes a snapshot with `total` the denominator, and the raw
+# XML joins the keep-forever tier so the rolling-365 window can't take history.
+npm run job -- import-nav docs/samples/ibkr-nav-flex-schema-fixture.xml
+npm run job -- fetch-nav <nav-flex-query-id>
+
+# Hand-enter IDX snapshots — no SoA parser (SPEC §9.2). Components stored beside
+# the total so switching the denominator is a config change (SPEC §9.3). One
+# entry, or a month-end backfill series from CSV in one sitting (SPEC §9.6).
+npm run job -- equity-idx --date 2026-07-31 --portfolio 800 --ledger-balance 200
+npm run job -- equity-idx --file month-end-series.csv
+
 # The localhost UI — reads the same file, renders "no Trades yet" and the
 # latest run record. Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui
