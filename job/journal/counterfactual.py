@@ -502,7 +502,6 @@ def _partial_state(
     bars: Sequence[Bar],
     entry_date: str,
     actual_exits: Sequence[ActualExit],
-    entry_qty: float,
 ) -> Tuple[str, Optional[int]]:
     """Grade the actual trade's partial timing against the band (§10.7).
 
@@ -679,8 +678,7 @@ def _assemble(
     nominal = next((v for v in variants if v.variant == nominal_variant), None)
     nominal_status = nominal.status if nominal else PENDING
 
-    partial_state, timing_delta = _partial_state(
-        bars, entry_date, actual_exits, entry_qty)
+    partial_state, timing_delta = _partial_state(bars, entry_date, actual_exits)
 
     # trail_exit_delta: actual final exit − nominal variant's exit, in trading
     # days (negative = exited early). Null when the nominal variant capped — no
