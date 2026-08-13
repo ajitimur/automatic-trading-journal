@@ -240,7 +240,7 @@ def _sma(closes: Sequence[float], n: int) -> Optional[float]:
     return sum(closes[-n:]) / n
 
 
-def _stack_state(mas) -> Optional[str]:
+def _stack_state(mas: dict[int, Optional[float]]) -> Optional[str]:
     """``aligned_up`` / ``aligned_down`` / ``mixed`` from the five MAs (§7.2).
 
     Null when any MA is null (insufficient history) — the ordering is undefined
@@ -286,7 +286,7 @@ def _volume_ratio(
     bars: Sequence[Bar],
     prior: Sequence[Bar],
     entry_date: str,
-    insufficient: set,
+    insufficient: set[str],
 ) -> Optional[float]:
     """``Volume(entry day) ÷ mean(Volume over 50 completed bars before entry)``.
 
