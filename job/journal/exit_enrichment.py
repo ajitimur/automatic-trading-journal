@@ -47,8 +47,10 @@ from .enrichment import (
     MA_WINDOWS,
     RS_WINDOW,
     _adr_pct,
+    _pack_markers,
     _sma,
     _stack_state,
+    _unpack_markers,
 )
 
 __all__ = [
@@ -443,13 +445,3 @@ def _row_to_excursion(row) -> Optional[Excursion]:
         mfe_high=row["mfe_high"], mfe_date=row["mfe_date"],
         mae_low=row["mae_low"], mae_date=row["mae_date"],
     )
-
-
-def _pack_markers(markers: FrozenSet[str]) -> str:
-    return ",".join(sorted(markers))
-
-
-def _unpack_markers(packed: Optional[str]) -> FrozenSet[str]:
-    if not packed:
-        return frozenset()
-    return frozenset(packed.split(","))
