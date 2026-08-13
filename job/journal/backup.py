@@ -34,7 +34,6 @@ and the defaults sit beside the DB so a fresh machine just works.
 
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
 import shutil
@@ -135,7 +134,7 @@ def snapshot_timestamp(now: datetime) -> str:
     return now.strftime("%Y%m%dT%H%M%S-%f")
 
 
-def _db_path_of(conn: sqlite3.Connection) -> str:
+def db_path_of(conn: sqlite3.Connection) -> str:
     for _seq, name, filename in conn.execute("PRAGMA database_list"):
         if name == "main":
             return filename or ""
@@ -260,6 +259,9 @@ def rehearse_restore(snapshot_path: str, scratch_dir: str) -> RestoreReport:
     tables_present: list[str] = []
     run_count = 0
     fill_count = 0
+    # Assume the worst until the schema check proves otherwise, so a snapshot
+    # that never opens verifies as failed rather than by omission.
+    missing: list[str] = list(_EXPECTED_TABLES)
 
     try:
         conn = sqlite3.connect(restored)
@@ -290,7 +292,6 @@ def rehearse_restore(snapshot_path: str, scratch_dir: str) -> RestoreReport:
             conn.close()
     except sqlite3.DatabaseError as exc:
         checks.append(f"open FAILED: {exc}")
-        missing = list(_EXPECTED_TABLES)
 
     verified = integrity_ok and not missing
     return RestoreReport(

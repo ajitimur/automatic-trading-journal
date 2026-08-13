@@ -164,7 +164,7 @@ def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
 
 
 def _snapshot_after_run(conn, result: RunResult) -> None:
-    db_path = backup._db_path_of(conn)
+    db_path = backup.db_path_of(conn)
     try:
         result.snapshot = backup.snapshot_database(
             conn,
