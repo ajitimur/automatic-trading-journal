@@ -30,7 +30,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date
-from typing import Callable, List, Optional, Protocol, Sequence, Tuple
+from typing import Callable, Optional, Protocol, Sequence, Tuple
 
 from . import secrets
 from .flex import FlexError
