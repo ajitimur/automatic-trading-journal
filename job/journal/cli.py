@@ -10,7 +10,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from . import db
+from . import db, fills, flex
 from .run import RunResult, execute_run
 
 
@@ -43,6 +43,24 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        inserted = fills.import_flex_file(conn, args.file)
+        total = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
+    except flex.FlexError as exc:
+        # A Flex error body is an error, never an empty statement (SPEC §4.1).
+        # Surface it and exit non-zero — unlike `run`, an import is an explicit
+        # operator action, so a bad file should not read as success.
+        print(f"import failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"imported {inserted} new fill(s) from {args.file}  ({total} in ledger)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="journal",
@@ -63,6 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="frontier date to advance to (default: today, UTC)",
     )
     run_p.set_defaults(func=cmd_run)
+
+    import_p = sub.add_parser(
+        "import", help="parse an IBKR Flex XML file into the Fill ledger"
+    )
+    import_p.add_argument("file", help="path to the Flex XML file on disk")
+    import_p.add_argument(
+        "--db",
+        default=None,
+        help="path to the SQLite store (default: $JOURNAL_DB or ~/.automatic-trading-journal/journal.db)",
+    )
+    import_p.set_defaults(func=cmd_import)
     return parser
 
 

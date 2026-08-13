@@ -23,10 +23,31 @@ export interface RunRecord {
   books: BookOutcome[];
 }
 
+// One row of the append-only Fill ledger (job/journal/db.py). IBKR gives a
+// genuine per-fill commission (SPEC §7.0), so it is shown at fill level.
+export interface Fill {
+  source: string;
+  source_ref: string;
+  revision: number;
+  book: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  price: number;
+  commission: number;
+  executed_at: string;
+  order_id: string | null;
+}
+
 export interface JournalState {
   tradeCount: number;
+  fillCount: number;
+  fills: Fill[];
   latestRun: RunRecord | null;
 }
+
+// Show the most recent fills; the ledger grows unbounded, the page is a glance.
+const FILL_PREVIEW_LIMIT = 50;
 
 // The tables the job creates (job/journal/db.py). If the file exists but the
 // job has never populated it, these are simply empty.
@@ -45,6 +66,15 @@ export function readState(dbPath: string): JournalState {
     const tradeCount = tableExists(db, 'trade')
       ? (db.prepare('SELECT COUNT(*) AS n FROM trade').get() as { n: number }).n
       : 0;
+
+    let fillCount = 0;
+    let fills: Fill[] = [];
+    if (tableExists(db, 'fill')) {
+      fillCount = (db.prepare('SELECT COUNT(*) AS n FROM fill').get() as { n: number }).n;
+      fills = db
+        .prepare('SELECT * FROM fill ORDER BY executed_at DESC, source_ref DESC LIMIT ?')
+        .all(FILL_PREVIEW_LIMIT) as unknown as Fill[];
+    }
 
     let latestRun: RunRecord | null = null;
     if (tableExists(db, 'run')) {
@@ -66,7 +96,7 @@ export function readState(dbPath: string): JournalState {
       }
     }
 
-    return { tradeCount, latestRun };
+    return { tradeCount, fillCount, fills, latestRun };
   } finally {
     db.close();
   }

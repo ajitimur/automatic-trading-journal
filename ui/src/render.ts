@@ -2,7 +2,7 @@
 // shows two things: "no Trades yet" and the latest run record. Kept as a pure
 // function so it is testable without a live server.
 
-import type { BookOutcome, JournalState, RunRecord } from './db.ts';
+import type { BookOutcome, Fill, JournalState, RunRecord } from './db.ts';
 
 function escapeHtml(value: string): string {
   return value
@@ -21,6 +21,30 @@ function describeOutcome(b: BookOutcome): string {
     return `no-op (at ${escapeHtml(b.to_date)})`;
   }
   return `error: ${escapeHtml(b.error ?? 'unknown')}`;
+}
+
+// The Fill ledger preview. Commission is shown per fill because the broker
+// provides it there (SPEC §7.0) — not flattened to an order total.
+function renderFills(fills: Fill[], fillCount: number): string {
+  if (fillCount === 0) {
+    return `<p class="muted">No Fills yet — drop a Flex file with <code>journal import &lt;file.xml&gt;</code>.</p>`;
+  }
+  const rows = fills
+    .map((f) => {
+      return `<tr><td>${escapeHtml(f.executed_at)}</td><td>${escapeHtml(f.book)}</td><td>${escapeHtml(f.symbol)}</td><td>${escapeHtml(f.side)}</td><td>${f.quantity}</td><td>${f.price}</td><td>${f.commission}</td></tr>`;
+    })
+    .join('');
+  const capped =
+    fillCount > fills.length
+      ? `<p class="muted">Showing the ${fills.length} most recent of ${fillCount}.</p>`
+      : '';
+  return `
+    <p>${fillCount} Fill(s).</p>
+    <table>
+      <thead><tr><th>Executed (ET)</th><th>Book</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Commission</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${capped}`;
 }
 
 function renderRun(run: RunRecord | null): string {
@@ -67,6 +91,8 @@ export function renderPage(state: JournalState): string {
   <h1>Automatic Trading Journal</h1>
   <h2>Trades</h2>
   ${trades}
+  <h2>Fills</h2>
+  ${renderFills(state.fills, state.fillCount)}
   <h2>Latest run</h2>
   ${renderRun(state.latestRun)}
 </body>

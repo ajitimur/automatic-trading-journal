@@ -13,10 +13,20 @@ import { startServer } from '../src/server.ts';
 
 const REPO = resolve(import.meta.dirname, '..', '..');
 const JOB_DIR = join(REPO, 'job');
+const FIXTURE = join(REPO, 'docs', 'samples', 'ibkr-flex-schema-fixture.xml');
 
 // Drive the real Python job so the UI reads a real file, not a hand-built one.
 function runJob(dbPath: string, asOf: string): void {
   execFileSync('python3', ['-m', 'journal', 'run', '--db', dbPath, '--as-of', asOf], {
+    cwd: JOB_DIR,
+    env: { ...process.env, PYTHONPATH: JOB_DIR },
+    stdio: 'pipe',
+  });
+}
+
+// Drop the sample Flex file into the same file the UI reads.
+function importFlex(dbPath: string): void {
+  execFileSync('python3', ['-m', 'journal', 'import', FIXTURE, '--db', dbPath], {
     cwd: JOB_DIR,
     env: { ...process.env, PYTHONPATH: JOB_DIR },
     stdio: 'pipe',
@@ -50,6 +60,25 @@ test(
     assert.match(html, /No Trades yet\./);
     assert.match(html, /Run <strong>#1<\/strong>/);
     assert.match(html, /2026-08-13/);
+  }),
+);
+
+test(
+  'imported fills are visible in the state and the page',
+  withDb(async (dbPath) => {
+    runJob(dbPath, '2026-08-13');
+    importFlex(dbPath);
+
+    const state = readState(dbPath);
+    assert.equal(state.fillCount, 5);
+    assert.equal(state.fills.length, 5);
+
+    // The US-Eastern timestamp and a symbol survive into the rendered page.
+    const html = renderPage(state);
+    assert.match(html, /5 Fill\(s\)/);
+    assert.match(html, /SYM1/);
+    assert.match(html, /2026-04-01T09:30:00-04:00/);
+    assert.doesNotMatch(html, /No Fills yet\./);
   }),
 );
 

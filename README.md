@@ -13,6 +13,10 @@ Two independent entry points over one SQLite file ([SPEC §13.6](SPEC.md#136-obs
 # record, advances each book. Running it twice is a visible no-op.
 npm run job -- run                 # or: job/bin/journal run
 
+# Import an IBKR Flex XML file into the append-only Fill ledger. One Fill per
+# execution row; re-dropping the same file is idempotent (SPEC §4.1).
+npm run job -- import docs/samples/ibkr-flex-schema-fixture.xml
+
 # The localhost UI — reads the same file, renders "no Trades yet" and the
 # latest run record. Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui

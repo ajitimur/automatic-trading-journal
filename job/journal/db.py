@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -49,13 +49,24 @@ CREATE TABLE IF NOT EXISTS run_book (
     PRIMARY KEY (run_id, book)
 );
 
--- Append-only source of truth (SPEC §3.1, ADR 0003). Where the IBKR Flex
--- parser (#22) and the Stockbit TC drop land. Empty in the skeleton.
+-- Append-only source of truth (SPEC §3.1, ADR 0003). The IBKR Flex parser
+-- (#22) lands one row per execution here; the Stockbit TC drop lands too. A
+-- broker restatement arrives as a new `revision` with earlier ones retained
+-- (never an edit). Cost attaches at fill level because IBKR provides it there
+-- (SPEC §7.0): `commission` is the per-fill pro-rata share, and summing it
+-- across an `order_id` reconciles to the broker's order total.
 CREATE TABLE IF NOT EXISTS fill (
-    source     TEXT NOT NULL,
-    source_ref TEXT NOT NULL,
-    revision   INTEGER NOT NULL,
-    book       TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    source_ref  TEXT NOT NULL,       -- logical execution (ibExecID base)
+    revision    INTEGER NOT NULL,    -- version (ibExecID seq); highest wins
+    book        TEXT NOT NULL,
+    symbol      TEXT NOT NULL DEFAULT '',
+    side        TEXT NOT NULL DEFAULT '',   -- 'BUY' | 'SELL'
+    quantity    REAL NOT NULL DEFAULT 0,    -- signed, as the broker reports
+    price       REAL NOT NULL DEFAULT 0,
+    commission  REAL NOT NULL DEFAULT 0,    -- signed, per-fill (SPEC §7.0)
+    executed_at TEXT NOT NULL DEFAULT '',   -- ISO 8601 US Eastern, offset kept
+    order_id    TEXT,                       -- ibOrderID (cost reconciliation)
     PRIMARY KEY (source, source_ref, revision)
 );
 
@@ -99,5 +110,28 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate_fill_columns(conn)
     conn.commit()
     return conn
+
+
+# The fill columns added for #22. ``CREATE TABLE IF NOT EXISTS`` leaves an
+# existing skeleton table (four columns) untouched, so bring it forward with
+# ALTER — non-destructive and idempotent, since the table is append-only and
+# empty at this point in the build.
+_FILL_COLUMNS = {
+    "symbol": "TEXT NOT NULL DEFAULT ''",
+    "side": "TEXT NOT NULL DEFAULT ''",
+    "quantity": "REAL NOT NULL DEFAULT 0",
+    "price": "REAL NOT NULL DEFAULT 0",
+    "commission": "REAL NOT NULL DEFAULT 0",
+    "executed_at": "TEXT NOT NULL DEFAULT ''",
+    "order_id": "TEXT",
+}
+
+
+def _migrate_fill_columns(conn: sqlite3.Connection) -> None:
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(fill)")}
+    for name, decl in _FILL_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE fill ADD COLUMN {name} {decl}")
