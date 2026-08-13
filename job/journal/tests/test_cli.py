@@ -8,9 +8,10 @@ import io
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
+from unittest import mock
 
-from journal import db
+from journal import cli, db, flex_client
 from journal.cli import main
 
 SAMPLES = os.path.join(
@@ -66,6 +67,38 @@ class CliTest(unittest.TestCase):
         code, out = self._import()
         self.assertEqual(code, 0)
         self.assertIn("0", out)
+
+    def _fetch(self, client):
+        # The real DoH/HTTP client is replaced with a fake — the wire is not
+        # touched, only the wiring from fetched XML into the ledger.
+        buf, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "_build_flex_client", return_value=client):
+            with redirect_stdout(buf), redirect_stderr(err):
+                code = main(["fetch", "QUERYID", "--db", self.db_path])
+        return code, buf.getvalue(), err.getvalue()
+
+    def test_fetch_lands_fetched_fills(self):
+        with open(FIXTURE, encoding="utf-8") as fh:
+            statement = fh.read()
+        client = mock.Mock()
+        client.fetch_statement.return_value = statement
+
+        code, out, _ = self._fetch(client)
+        self.assertEqual(code, 0)
+        client.fetch_statement.assert_called_once_with("QUERYID")
+        self.assertIn("5", out)
+
+        conn = db.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
+        conn.close()
+        self.assertEqual(count, 5)
+
+    def test_fetch_surfaces_interception_and_exits_nonzero(self):
+        client = mock.Mock()
+        client.fetch_statement.side_effect = flex_client.InterceptionError("mismatch")
+        code, _out, err = self._fetch(client)
+        self.assertEqual(code, 1)
+        self.assertIn("mismatch", err)
 
 
 if __name__ == "__main__":
