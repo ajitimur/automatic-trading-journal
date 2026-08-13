@@ -8,3 +8,8 @@ ibkr-nav.xml
 .env
 .DS_Store
 ibkr-flex-sample.xml
+# testing
+/coverage
+.claude/settings.local.json
+.claude/worktrees/
+.claude/skills/
