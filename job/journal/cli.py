@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import db, equity, fills, flex, flex_client, secrets, stockbit, stops, trades
+from . import books, db, equity, fills, flex, flex_client, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -335,6 +335,50 @@ def cmd_equity_idx(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_pct(value: Optional[float], marker: Optional[str]) -> str:
+    if value is not None:
+        return f"{value:.3f}%"
+    return f"null ({marker})" if marker else "null (no stop)"
+
+
+def cmd_risk(args: argparse.Namespace) -> int:
+    """Report Risk % and Exposure % per book, with the staleness banner and counts.
+
+    Read-time computation over the current snapshots (§9.4): one lookup, one
+    calendar-day bound per book, both percentages null-with-marker past it, and
+    the ``estimated`` tier excluded from the aggregates with its count reported.
+    The staleness marker surfaces as a plain banner line (§9.7), never an alarm.
+    """
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        selected = [args.book] if args.book else list(books.BOOKS)
+        for book in selected:
+            results = risk.compute_book(conn, book)
+            print(f"{book}  ({len(results)} Trade(s))")
+            for r in results:
+                marker = risk.INSUFFICIENT_HISTORY if r.stale else None
+                print(
+                    f"  Trade {r.trade_id} {r.entry_date}  "
+                    f"risk {_format_pct(r.risk_percentage, marker)}  "
+                    f"exposure {_format_pct(r.exposure_percentage, marker)}"
+                    + (f"  [{r.provenance}]" if r.provenance == risk.ESTIMATED else "")
+                )
+            for r in results:
+                line = risk.banner_line(r)
+                if line:
+                    print(f"  ! {line}")
+            agg = risk.aggregate(results, metric="risk")
+            print(
+                f"  risk aggregate: {agg.included} included; excluded "
+                f"{agg.excluded_stale} stale, {agg.excluded_estimated} estimated, "
+                f"{agg.excluded_no_stop} no-stop"
+            )
+    finally:
+        conn.close()
+    return 0
+
+
 def _add_db_argument(subparser: argparse.ArgumentParser) -> None:
     # Both subcommands take the same store path; keep the one help string here.
     subparser.add_argument(
@@ -482,6 +526,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(idx_p)
     idx_p.set_defaults(func=cmd_equity_idx)
+
+    risk_p = sub.add_parser(
+        "risk",
+        help="report Risk % and Exposure % per book with the staleness bound and counts",
+    )
+    risk_p.add_argument(
+        "--book", choices=books.BOOKS, default=None,
+        help="limit to one book (default: every book — never aggregated across)",
+    )
+    _add_db_argument(risk_p)
+    risk_p.set_defaults(func=cmd_risk)
     return parser
 
 
