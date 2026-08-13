@@ -175,26 +175,26 @@ the real Akamai edges differ per host. **Detect interception by mismatch against
 answer, never by matching a known block address.** A hardcoded blocklist would have read
 today's interception as a clean resolve. (The DoH answers rotate too, as #2 already found.)
 
-### Still unverified — needs the account owner in the portal
+### Settled: the NAV section *does* emit a daily series
 
-Everything on the IBKR side rests on one unverified point, and it cannot be settled without
-creating a second Flex Query, which only the account owner can do:
+The second Flex Query was built and fetched on 2026-08-13. Full results in
+[`ibkr-nav-flex-findings.md`](ibkr-nav-flex-findings.md); the headline is that **#15's
+inference was right and IBKR's prose is what misleads** — 262 rows, one per `reportDate`, zero
+gaps across the whole window. `total` behaves like net liquidation value (residual peaks at
+0.0061%) and is the field to use.
 
-- **Does the NAV section emit one `<EquitySummaryByReportDateInBase>` row per `reportDate`, or
-  only period start/end?** IBKR's prose describes the PDF layout and reads as denying the
-  series. If it is endpoints-only, #15's IBKR verdict degrades sharply and #16's shape changes.
-- **Are there gaps**, and what is the **earliest `reportDate`** actually returned — does
-  `N > 365` work, or is it clamped? (#2 found the period control offers presets only, deepest
-  `Last365CalendarDays`. Whether the NAV section behaves the same is unknown; #15 found Flex is
-  retrospective four calendar years plus YTD, which the presets did not reflect.)
-- **Does `total` behave like net liquidation value** — is `total ≈ cash + stock`?
-  (`netLiquidation` does not exist in Flex; the equivalence is inferred.)
+Two findings neither #15 nor #19 anticipated, both of which land on #16:
 
-**Run `scripts/equity-nav-wizard.sh`.** It walks the portal steps, fetches over the DoH path
-with per-host resolution, probes the XML for all four questions, re-confirms the error shape
-against the new query id, and writes redacted answers to `ibkr-nav-flex-findings.md`. Its
-probe was tested against synthetic NAV files for both the daily-series and the
-wrong-section-selected cases.
+- **The series is weekday-dense, not trading-day-dense** — a NAV row exists on all ten US
+  market holidays in the window. It collides with #17's *a zero-volume row is not a trading
+  day* invariant: the equity series has rows the bar cache deliberately does not.
+- **The reachable window is a rolling 365 days**, because the period control offers presets
+  only and `N > 365` was never on offer. It clears the July 2026 floor today, but **the floor
+  ages out of reach around July 2027** — so equity snapshots must be *captured and persisted*,
+  never re-derived on demand.
+
+Also: equity **lags by at least a day** (freshest row is T-1/T-2), so an entry-dated risk %
+cannot be computed on the entry day itself.
 
 ---
 
@@ -207,6 +207,12 @@ wrong-section-selected cases.
 - **#16 inherits a live question the document cannot answer**: `Equity NAB` or
   `Portfolio + Cash`? They differ by ~20%, and risk % scales inversely with the choice. The
   Portfolio Performance comparison settles it for the cost of one screenshot.
-- **The IBKR side keeps its shape but not yet its confidence.** Both silent killers are now
-  observed rather than inferred, and a third (two hosts) was found. The daily-series
-  cardinality is still the load-bearing unknown, and #16 should not assume it.
+- **The IBKR side keeps its shape and now has its confidence.** The daily series is real, not
+  inferred; `total` is the denominator; both silent killers are observed rather than assumed,
+  and a third (two hosts) was found. But it arrives with **two new constraints**: the equity
+  series is weekday-dense while the bar cache is trading-day-dense, and the 365-day rolling
+  window means **persistence is mandatory, not an optimisation** — the July 2026 floor stops
+  being re-derivable around July 2027.
+- **A scheduling fact worth stating once**: equity lags a day on both books — IBKR by T-1/T-2,
+  Stockbit by up to a month. No same-day risk % is possible on either. #10's two-clock
+  enrichment already covers it; #16 should not design around a freshness it cannot have.
