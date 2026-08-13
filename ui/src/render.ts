@@ -47,8 +47,6 @@ function renderFills(fills: Fill[], fillCount: number): string {
     ${capped}`;
 }
 
-// One Trade: the interpreted cohort up front, its Fills one disclosure away
-// (SPEC §5.9). The <details> is the disclosure — collapsed until opened.
 // The stop cell states its provenance and whether it is locked; a missing stop
 // reads as "—", the hole the daily job nags about (SPEC §5.5), not a blank.
 function renderStop(t: Trade): string {
@@ -59,6 +57,8 @@ function renderStop(t: Trade): string {
   return `<td>${t.stop}${prov}</td>`;
 }
 
+// One Trade: the interpreted cohort up front, its Fills one disclosure away
+// (SPEC §5.9). The <details> is the disclosure — collapsed until opened.
 function renderTrade(t: Trade): string {
   const notional = t.entry_qty * t.entry_avg_price;
   const entryRows = t.entryFills
