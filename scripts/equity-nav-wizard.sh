@@ -273,6 +273,20 @@ printf '\n'
 note "While you are on that screen — this is the question #2 left open:"
 ask NAV_PERIOD_OFFERED "What did the period control actually accept for N? (e.g. '420 accepted', 'clamped to 365', 'presets only'):"
 ask NAV_QUERY_ID "Paste the NEW Flex Query ID (NAV):"
+# Guard: this wizard is interactive by nature — stage 2 cannot happen without a
+# human in the IBKR portal. Run without a TTY (piped, or from an agent) and
+# every prompt reads EOF, which would otherwise write an empty NAV_QUERY_ID to
+# the vault and fire a malformed Flex request. Fail loudly instead.
+if [[ -z "${NAV_QUERY_ID//[[:space:]]/}" ]]; then
+  warn "no query id was entered."
+  if [[ ! -t 0 ]]; then
+    warn "stdin is not a terminal — this wizard needs an interactive shell."
+    note "Run it directly in your own terminal, not piped and not from an agent."
+  else
+    note "Create the NAV query in the portal first, then re-run."
+  fi
+  exit 1
+fi
 write_env NAV_QUERY_ID "$NAV_QUERY_ID"
 record "What period does the NAV query accept?" "$NAV_PERIOD_OFFERED"
 pause
