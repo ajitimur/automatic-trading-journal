@@ -11,7 +11,7 @@ import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 
-from journal import cli, db, fills, flex, flex_client, stops
+from journal import cli, db, equity, fills, flex, flex_client, stops
 from journal.cli import main
 
 SAMPLES = os.path.join(
@@ -279,6 +279,38 @@ class CliTest(unittest.TestCase):
         n = conn.execute("SELECT COUNT(*) AS n FROM equity_snapshot WHERE book='IDX'").fetchone()["n"]
         conn.close()
         self.assertEqual(n, 3)
+
+
+    def test_risk_reports_percentages_bound_and_excluded_counts(self):
+        conn = db.connect(self.db_path)
+        # A fresh stated IDX snapshot and a Trade against it.
+        equity.record_idx_snapshot(conn, date="2026-08-15", portfolio=900.0, ledger_balance=100.0)
+        conn.execute(
+            "INSERT INTO trade (book, symbol, entry_date, entry_qty, entry_avg_price, status, stop) "
+            "VALUES ('IDX', 'BBRI', '2026-08-20', 10, 5.0, 'open', 4.0)"
+        )
+        # A stale one — entered 2026-07-25, whose nearest prior snapshot is the
+        # June one, 54 days back and past the 45-day IDX bound.
+        equity.record_idx_snapshot(conn, date="2026-06-01", portfolio=900.0, ledger_balance=100.0)
+        conn.execute(
+            "INSERT INTO trade (book, symbol, entry_date, entry_qty, entry_avg_price, status, stop) "
+            "VALUES ('IDX', 'TLKM', '2026-07-25', 10, 5.0, 'open', 4.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["risk", "--book", "IDX", "--db", self.db_path])
+        out = buf.getvalue()
+        self.assertEqual(code, 0)
+        # equity 1000: risk (5-4)*10/1000*100 = 1.0%, exposure 5*10/1000*100 = 5.0%.
+        self.assertIn("risk 1.000%", out)
+        self.assertIn("exposure 5.000%", out)
+        self.assertIn("insufficient_history", out)    # the stale Trade's marker
+        self.assertIn("! IDX equity", out)            # the banner line
+        self.assertIn("1 included", out)
+        self.assertIn("1 stale", out)
 
 
 if __name__ == "__main__":

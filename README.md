@@ -54,6 +54,13 @@ npm run job -- fetch-nav <nav-flex-query-id>
 npm run job -- equity-idx --date 2026-07-31 --portfolio 800 --ledger-balance 200
 npm run job -- equity-idx --file month-end-series.csv
 
+# Risk % and Exposure % — one denominator, two questions (SPEC §9.4). Both read
+# the most recent snapshot at or before entry, under one calendar-day staleness
+# bound (IBKR 7, IDX 45): past it both are null with a marker that reaches the
+# banner and the Trade leaves the risk-% aggregate with its count reported. An
+# `estimated` snapshot still computes and flags but is excluded too.
+npm run job -- risk               # every book; --book US|IDX to limit
+
 # The localhost UI — reads the same file, renders "no Trades yet" and the
 # latest run record. Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui
