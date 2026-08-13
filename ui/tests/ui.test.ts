@@ -33,6 +33,27 @@ function importFlex(dbPath: string): void {
   });
 }
 
+// Seed a buy fill and confirm it into a Trade, all through the real job, so the
+// UI reads a genuinely confirmed Trade rather than a hand-built row.
+function seedConfirmedTrade(dbPath: string): void {
+  const py =
+    'from journal import db, fills, flex; ' +
+    "c=db.connect('" + dbPath + "'); " +
+    "fills.insert_fills(c,[flex.Fill(source='ibkr',source_ref='b1',revision=1,book='US'," +
+    "symbol='AAA',side='BUY',quantity=100.0,price=10.0,commission=0.0," +
+    "executed_at='2026-08-03T09:30:00-04:00',order_id='o1')]); c.close()";
+  execFileSync('python3', ['-c', py], {
+    cwd: JOB_DIR,
+    env: { ...process.env, PYTHONPATH: JOB_DIR },
+    stdio: 'pipe',
+  });
+  execFileSync('python3', ['-m', 'journal', 'confirm', '--db', dbPath], {
+    cwd: JOB_DIR,
+    env: { ...process.env, PYTHONPATH: JOB_DIR },
+    stdio: 'pipe',
+  });
+}
+
 function withDb(fn: (dbPath: string) => Promise<void> | void) {
   return async () => {
     const dir = mkdtempSync(join(tmpdir(), 'journal-ui-'));
@@ -79,6 +100,30 @@ test(
     assert.match(html, /SYM1/);
     assert.match(html, /2026-04-01T09:30:00-04:00/);
     assert.doesNotMatch(html, /No Fills yet\./);
+  }),
+);
+
+test(
+  'a confirmed Trade renders with its Fills one disclosure away',
+  withDb(async (dbPath) => {
+    runJob(dbPath, '2026-08-13');
+    seedConfirmedTrade(dbPath);
+
+    const state = readState(dbPath);
+    assert.equal(state.tradeCount, 1);
+    assert.equal(state.trades.length, 1);
+    const trade = state.trades[0];
+    assert.ok(trade, 'a confirmed Trade is present');
+    assert.equal(trade.symbol, 'AAA');
+    assert.equal(trade.entry_avg_price, 10);
+    assert.equal(trade.entryFills.length, 1);
+
+    const html = renderPage(state);
+    assert.match(html, /1 confirmed Trade\(s\)/);
+    assert.match(html, /AAA/);
+    // The Fills are behind a disclosure, not on the surface.
+    assert.match(html, /<details>[\s\S]*<summary>Fills<\/summary>/);
+    assert.doesNotMatch(html, /No Trades yet\./);
   }),
 );
 

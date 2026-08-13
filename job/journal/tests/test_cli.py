@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
-from journal import db
+from journal import db, fills, flex
 from journal.cli import main
 
 SAMPLES = os.path.join(
@@ -66,6 +66,43 @@ class CliTest(unittest.TestCase):
         code, out = self._import()
         self.assertEqual(code, 0)
         self.assertIn("0", out)
+
+    def _seed_buy(self):
+        conn = db.connect(self.db_path)
+        fills.insert_fills(conn, [
+            flex.Fill(
+                source="ibkr", source_ref="b1", revision=1, book="US",
+                symbol="AAA", side="BUY", quantity=100.0, price=10.0,
+                commission=0.0, executed_at="2026-08-03T09:30:00-04:00", order_id="o1",
+            )
+        ])
+        conn.close()
+
+    def _confirm(self, *extra):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["confirm", "--db", self.db_path, *extra])
+        return code, buf.getvalue()
+
+    def test_confirm_dry_run_commits_nothing_then_confirm_lands_the_trade(self):
+        self._seed_buy()
+
+        code, out = self._confirm("--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("nothing committed", out)
+        self.assertIn("new-trade", out)
+
+        conn = db.connect(self.db_path)
+        self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 0)
+        conn.close()
+
+        code, out = self._confirm()
+        self.assertEqual(code, 0)
+        self.assertIn("1 new Trade", out)
+
+        conn = db.connect(self.db_path)
+        self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 1)
+        conn.close()
 
 
 if __name__ == "__main__":

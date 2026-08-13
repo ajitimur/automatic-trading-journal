@@ -17,6 +17,12 @@ npm run job -- run                 # or: job/bin/journal run
 # execution row; re-dropping the same file is idempotent (SPEC §4.1).
 npm run job -- import docs/samples/ibkr-flex-schema-fixture.xml
 
+# Derive Trades from Fills through the one confirm door (SPEC §5.1). Buys group
+# into entry-day cohorts (ADR 0001); sells allocate FIFO across open Trades.
+# --dry-run shows the proposals and commits nothing; re-confirming is a no-op.
+npm run job -- confirm --dry-run
+npm run job -- confirm
+
 # The localhost UI — reads the same file, renders "no Trades yet" and the
 # latest run record. Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui

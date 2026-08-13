@@ -10,7 +10,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from . import db, fills, flex
+from . import db, fills, flex, trades
 from .run import RunResult, execute_run
 
 
@@ -61,6 +61,46 @@ def cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_proposal(p: trades.Proposal) -> str:
+    if p.kind == "new-trade":
+        return (
+            f"  new-trade   {p.book} {p.symbol} {p.entry_date}  "
+            f"{p.quantity:g} @ {p.avg_price:.4f}  — {p.note}"
+        )
+    where = ", ".join(f"{a.quantity:g}→{a.entry_date}" for a in p.allocations) or "nothing open"
+    return (
+        f"  exit-alloc  {p.book} {p.symbol} {p.exit_date}  "
+        f"{p.quantity:g} @ {p.price}  [{where}]  — {p.note}"
+    )
+
+
+def cmd_confirm(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        proposals = trades.propose(conn)
+        if args.dry_run:
+            # The one door, shown before it commits (SPEC §5.1): nothing is written.
+            if not proposals:
+                print("no proposals — the Trade ledger matches the Fills")
+            else:
+                print(f"{len(proposals)} proposal(s) — nothing committed (dry run):")
+                for p in proposals:
+                    print(_format_proposal(p))
+            return 0
+        result = trades.confirm(conn)
+    finally:
+        conn.close()
+    print(
+        f"confirmed: {result.new_trades} new Trade(s), "
+        f"{result.exits_allocated} exit(s) allocated"
+        + (f", {result.parked_exits} parked" if result.parked_exits else "")
+    )
+    for closed in result.closed_trades:
+        print(f"  closed: {closed}")
+    return 0
+
+
 def _add_db_argument(subparser: argparse.ArgumentParser) -> None:
     # Both subcommands take the same store path; keep the one help string here.
     subparser.add_argument(
@@ -93,6 +133,18 @@ def build_parser() -> argparse.ArgumentParser:
     import_p.add_argument("file", help="path to the Flex XML file on disk")
     _add_db_argument(import_p)
     import_p.set_defaults(func=cmd_import)
+
+    confirm_p = sub.add_parser(
+        "confirm",
+        help="derive Trades from Fills and commit them (the one confirm door)",
+    )
+    confirm_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show the proposals without committing anything",
+    )
+    _add_db_argument(confirm_p)
+    confirm_p.set_defaults(func=cmd_confirm)
     return parser
 
 

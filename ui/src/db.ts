@@ -39,8 +39,31 @@ export interface Fill {
   order_id: string | null;
 }
 
+// One allocation of a sell Fill to a Trade (job/journal/db.py trade_exit).
+export interface ExitAllocation {
+  exit_date: string;
+  quantity: number;
+  price: number;
+}
+
+// A confirmed Trade — an entry-day cohort (ADR 0001) — with its Fills one
+// disclosure away (SPEC §5.9): the entry buys that formed it and the exits
+// allocated against it.
+export interface Trade {
+  id: number;
+  book: string;
+  symbol: string;
+  entry_date: string;
+  entry_qty: number;
+  entry_avg_price: number;
+  status: string;
+  entryFills: Fill[];
+  exits: ExitAllocation[];
+}
+
 export interface JournalState {
   tradeCount: number;
+  trades: Trade[];
   fillCount: number;
   fills: Fill[];
   latestRun: RunRecord | null;
@@ -58,6 +81,43 @@ function tableExists(db: DatabaseSync, name: string): boolean {
   return row !== undefined;
 }
 
+function columnExists(db: DatabaseSync, table: string, column: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+}
+
+// The confirmed Trades, each with its Fills one disclosure away (SPEC §5.9).
+// The entry Fills are the cohort's buys — highest revision per source_ref, since
+// a restatement is retained beside the earlier one (ADR 0003).
+function readTrades(db: DatabaseSync): Trade[] {
+  // A skeleton file may have the old four-column `trade`; only read the ledger
+  // once the #23 columns exist, otherwise there are no confirmed Trades to show.
+  if (!tableExists(db, 'trade') || !columnExists(db, 'trade', 'entry_avg_price')) {
+    return [];
+  }
+  const trades = db
+    .prepare('SELECT * FROM trade ORDER BY entry_date DESC, symbol')
+    .all() as unknown as Array<Omit<Trade, 'entryFills' | 'exits'>>;
+
+  const entryStmt = db.prepare(
+    `SELECT f.* FROM fill f
+     WHERE f.book = ? AND f.symbol = ? AND f.side = 'BUY'
+       AND substr(f.executed_at, 1, 10) = ?
+       AND f.revision = (SELECT MAX(f2.revision) FROM fill f2
+                         WHERE f2.source = f.source AND f2.source_ref = f.source_ref)
+     ORDER BY f.executed_at`,
+  );
+  const exitStmt = db.prepare(
+    'SELECT exit_date, quantity, price FROM trade_exit WHERE trade_id = ? ORDER BY exit_date',
+  );
+
+  return trades.map((t) => ({
+    ...t,
+    entryFills: entryStmt.all(t.book, t.symbol, t.entry_date) as unknown as Fill[],
+    exits: exitStmt.all(t.id) as unknown as ExitAllocation[],
+  }));
+}
+
 export function readState(dbPath: string): JournalState {
   // Read-only: the UI never writes. The store outlives the UI session because
   // it is a file, not a daemon (SPEC §13.6).
@@ -66,6 +126,7 @@ export function readState(dbPath: string): JournalState {
     const tradeCount = tableExists(db, 'trade')
       ? (db.prepare('SELECT COUNT(*) AS n FROM trade').get() as { n: number }).n
       : 0;
+    const trades = readTrades(db);
 
     let fillCount = 0;
     let fills: Fill[] = [];
@@ -96,7 +157,7 @@ export function readState(dbPath: string): JournalState {
       }
     }
 
-    return { tradeCount, fillCount, fills, latestRun };
+    return { tradeCount, trades, fillCount, fills, latestRun };
   } finally {
     db.close();
   }

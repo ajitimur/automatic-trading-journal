@@ -2,7 +2,7 @@
 // shows two things: "no Trades yet" and the latest run record. Kept as a pure
 // function so it is testable without a live server.
 
-import type { BookOutcome, Fill, JournalState, RunRecord } from './db.ts';
+import type { BookOutcome, Fill, JournalState, RunRecord, Trade } from './db.ts';
 
 function escapeHtml(value: string): string {
   return value
@@ -47,6 +47,60 @@ function renderFills(fills: Fill[], fillCount: number): string {
     ${capped}`;
 }
 
+// One Trade: the interpreted cohort up front, its Fills one disclosure away
+// (SPEC §5.9). The <details> is the disclosure — collapsed until opened.
+function renderTrade(t: Trade): string {
+  const notional = t.entry_qty * t.entry_avg_price;
+  const entryRows = t.entryFills
+    .map(
+      (f) =>
+        `<tr><td>${escapeHtml(f.executed_at)}</td><td>BUY</td><td>${f.quantity}</td><td>${f.price}</td></tr>`,
+    )
+    .join('');
+  const exitRows = t.exits
+    .map(
+      (x) =>
+        `<tr><td>${escapeHtml(x.exit_date)}</td><td>SELL</td><td>${x.quantity}</td><td>${x.price}</td></tr>`,
+    )
+    .join('');
+  const exitsSection = t.exits.length
+    ? `<p class="muted">Exits allocated to this Trade:</p>
+       <table><thead><tr><th>Date</th><th>Side</th><th>Qty</th><th>Price</th></tr></thead>
+       <tbody>${exitRows}</tbody></table>`
+    : '';
+  return `
+    <tr>
+      <td>${escapeHtml(t.book)}</td>
+      <td>${escapeHtml(t.symbol)}</td>
+      <td>${escapeHtml(t.entry_date)}</td>
+      <td>${t.entry_qty}</td>
+      <td>${t.entry_avg_price.toFixed(4)}</td>
+      <td>${notional.toFixed(2)}</td>
+      <td>${escapeHtml(t.status)}</td>
+    </tr>
+    <tr class="disclosure"><td colspan="7">
+      <details>
+        <summary>Fills</summary>
+        <table><thead><tr><th>Executed (ET)</th><th>Side</th><th>Qty</th><th>Price</th></tr></thead>
+        <tbody>${entryRows}</tbody></table>
+        ${exitsSection}
+      </details>
+    </td></tr>`;
+}
+
+function renderTrades(trades: Trade[]): string {
+  if (trades.length === 0) {
+    return `<p class="muted">No Trades yet.</p>`;
+  }
+  const rows = trades.map(renderTrade).join('');
+  return `
+    <p>${trades.length} confirmed Trade(s).</p>
+    <table>
+      <thead><tr><th>Book</th><th>Symbol</th><th>Entry date</th><th>Qty</th><th>Avg price</th><th>Notional</th><th>Status</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 function renderRun(run: RunRecord | null): string {
   if (run === null) {
     return `<p class="muted">No run yet — start the job with <code>journal run</code>.</p>`;
@@ -67,11 +121,6 @@ function renderRun(run: RunRecord | null): string {
 }
 
 export function renderPage(state: JournalState): string {
-  const trades =
-    state.tradeCount === 0
-      ? `<p class="muted">No Trades yet.</p>`
-      : `<p>${state.tradeCount} Trade(s).</p>`;
-
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -85,12 +134,14 @@ export function renderPage(state: JournalState): string {
     table { border-collapse: collapse; margin-top: 0.5rem; }
     th, td { text-align: left; padding: 0.3rem 0.8rem; border-bottom: 1px solid #eee; }
     code { background: #f4f4f4; padding: 0 0.3rem; border-radius: 3px; }
+    details summary { cursor: pointer; color: #555; }
+    tr.disclosure td { padding-top: 0; border-bottom: 1px solid #ddd; }
   </style>
 </head>
 <body>
   <h1>Automatic Trading Journal</h1>
   <h2>Trades</h2>
-  ${trades}
+  ${renderTrades(state.trades)}
   <h2>Fills</h2>
   ${renderFills(state.fills, state.fillCount)}
   <h2>Latest run</h2>

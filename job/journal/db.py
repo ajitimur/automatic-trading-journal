@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -71,12 +71,37 @@ CREATE TABLE IF NOT EXISTS fill (
 );
 
 -- The unit of analysis, an entry-day cohort derived from fills (SPEC §3.1,
--- ADR 0001). Empty in the skeleton, so the UI renders "no Trades yet".
+-- ADR 0001): one symbol, one book, one entry date. Recomputed from Fills, never
+-- matched — nothing lands here except through a confirm (SPEC §5.1, issue #23).
+-- `entry_avg_price` is the quantity-weighted mean of the cohort's entry fills,
+-- so `entry_avg_price * entry_qty` is the cash that actually left the account.
+-- A different entry day is a *different* Trade, never an addition (ADR 0001);
+-- the (book, symbol, entry_date) uniqueness enforces that at the table.
 CREATE TABLE IF NOT EXISTS trade (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    book            TEXT NOT NULL,
+    symbol          TEXT NOT NULL,
+    entry_date      TEXT NOT NULL,
+    entry_qty       REAL NOT NULL DEFAULT 0,
+    entry_avg_price REAL NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'closed'
+    UNIQUE (book, symbol, entry_date)
+);
+
+-- An Exit is an allocation of one sell Fill to a Trade (SPEC §3.1, §3.4). Sells
+-- allocate FIFO across open Trades — oldest first — overridable at confirm, and
+-- an override may never allocate a Trade more than it holds open. A single sell
+-- can split across two Trades, so it lands as several rows all carrying the same
+-- `source_ref`; that shared ref is what makes re-confirming the same sell a
+-- no-op (the sell is already allocated).
+CREATE TABLE IF NOT EXISTS trade_exit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    book       TEXT NOT NULL,
-    symbol     TEXT NOT NULL,
-    entry_date TEXT NOT NULL
+    trade_id   INTEGER NOT NULL REFERENCES trade(id),
+    source     TEXT NOT NULL,       -- the sell Fill's source
+    source_ref TEXT NOT NULL,       -- the sell Fill's logical execution
+    exit_date  TEXT NOT NULL,
+    quantity   REAL NOT NULL,       -- positive shares allocated to this Trade
+    price      REAL NOT NULL
 );
 
 -- The local bar cache (SPEC §4.4, #24). A trading-day axis: rows are
@@ -152,6 +177,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     _migrate_fill_columns(conn)
+    _migrate_trade_columns(conn)
     conn.commit()
     return conn
 
@@ -176,3 +202,22 @@ def _migrate_fill_columns(conn: sqlite3.Connection) -> None:
     for name, decl in _FILL_COLUMNS.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE fill ADD COLUMN {name} {decl}")
+
+
+# The trade columns added for #23. The skeleton (#21) created `trade` with only
+# (id, book, symbol, entry_date); a Trade now also carries its derived entry
+# quantity, quantity-weighted average price and lifecycle status. Same ALTER
+# migration as the fill table — non-destructive and idempotent, and the table is
+# empty at this point since nothing lands without a confirm.
+_TRADE_COLUMNS = {
+    "entry_qty": "REAL NOT NULL DEFAULT 0",
+    "entry_avg_price": "REAL NOT NULL DEFAULT 0",
+    "status": "TEXT NOT NULL DEFAULT 'open'",
+}
+
+
+def _migrate_trade_columns(conn: sqlite3.Connection) -> None:
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(trade)")}
+    for name, decl in _TRADE_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE trade ADD COLUMN {name} {decl}")
