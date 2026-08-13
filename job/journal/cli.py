@@ -7,11 +7,10 @@ touching the job. Nothing macOS-specific sits in this path.
 from __future__ import annotations
 
 import argparse
-import sys
-from typing import Optional, Sequence
-
 import csv
+import sys
 from datetime import datetime, timezone
+from typing import Optional, Sequence
 
 from . import db, equity, fills, flex, flex_client, secrets, trades
 from .run import RunResult, execute_run
