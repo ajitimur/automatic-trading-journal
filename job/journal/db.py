@@ -78,6 +78,47 @@ CREATE TABLE IF NOT EXISTS trade (
     symbol     TEXT NOT NULL,
     entry_date TEXT NOT NULL
 );
+
+-- The local bar cache (SPEC §4.4, #24). A trading-day axis: rows are
+-- split-adjusted, dividend-unadjusted daily bars, keyed per (book, symbol,
+-- date). Zero-volume rows are filtered at the cache boundary (ADR 0005) before
+-- they land here, so a stored bar is always a day something traded. The cache
+-- is part of the design, not an optimisation: reads come from here, the daily
+-- job fills it, and if the source blocks nothing already stored is lost.
+CREATE TABLE IF NOT EXISTS bar (
+    book     TEXT NOT NULL,
+    symbol   TEXT NOT NULL,
+    date     TEXT NOT NULL,            -- ISO trading day
+    open     REAL NOT NULL,
+    high     REAL NOT NULL,
+    low      REAL NOT NULL,
+    close    REAL NOT NULL,
+    volume   INTEGER NOT NULL,         -- always > 0 (zero-volume filtered out)
+    dividend REAL NOT NULL DEFAULT 0,  -- cash distribution on this date, if any
+    PRIMARY KEY (book, symbol, date)
+);
+
+-- Per-fetch metadata (SPEC §4.4). A Trade is fetched more than once (entry,
+-- daily while open, post-exit window), so this is per-fetch, not per-Trade.
+-- Every fetch records its fetch_date, source and span-check result; a failed
+-- span check is recorded here (span_ok = 0) even though the fetch then raises,
+-- and the filtered zero-volume count rides along so a long suspension is
+-- visible in diagnostics without being an error.
+CREATE TABLE IF NOT EXISTS bar_fetch (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    book                 TEXT NOT NULL,
+    symbol               TEXT NOT NULL,
+    fetch_date           TEXT NOT NULL,
+    source               TEXT NOT NULL,
+    requested_start      TEXT NOT NULL,
+    requested_end        TEXT NOT NULL,
+    covered_start        TEXT,
+    covered_end          TEXT,
+    rows_fetched         INTEGER NOT NULL,
+    zero_volume_filtered INTEGER NOT NULL,
+    span_ok              INTEGER NOT NULL,   -- 1 pass | 0 repair required
+    span_detail          TEXT NOT NULL
+);
 """
 
 

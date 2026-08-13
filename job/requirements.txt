@@ -1,0 +1,8 @@
+# Job runtime dependencies (SPEC §13). Install into the deploy machine's
+# interpreter: `pip install -r job/requirements.txt`.
+#
+# yfinance is the one bar source behind the market-neutral seam (§4.4, #24). Its
+# cookie/crumb session handling is load-bearing — a hand-rolled HTTP client
+# against Yahoo returns 429 on the first request. It is imported lazily, only
+# on a real fetch, so the pipeline and its tests import and run without it.
+yfinance>=0.2.40
