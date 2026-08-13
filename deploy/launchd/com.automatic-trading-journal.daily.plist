@@ -32,6 +32,12 @@
         <string>__DATA__/journal.db</string>
         <key>JOURNAL_SECRET_IBKR_FLEX_TOKEN</key>
         <string>__SET_AT_INSTALL__</string>
+        <!-- Durability (SPEC §13.5): every successful run leaves a VACUUM INTO
+             snapshot beside the DB, and an off-machine copy here. Point this at
+             a durable, ideally encrypted, volume so at least one DB copy lands
+             off this machine. Snapshots/archive default beside __DATA__. -->
+        <key>JOURNAL_OFFSITE_DIR</key>
+        <string>__SET_AT_INSTALL__</string>
     </dict>
 
     <key>StartCalendarInterval</key>

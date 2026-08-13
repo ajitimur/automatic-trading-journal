@@ -54,6 +54,15 @@ npm run job -- fetch-nav <nav-flex-query-id>
 npm run job -- equity-idx --date 2026-07-31 --portfolio 800 --ledger-balance 200
 npm run job -- equity-idx --file month-end-series.csv
 
+# Durability (SPEC §13.5). Every successful `run` leaves a timestamped
+# `VACUUM INTO` snapshot under rolling retention, plus an off-machine copy when
+# $JOURNAL_OFFSITE_DIR is set (at least one copy off this machine). Raw source
+# documents (Flex XML, TC/SoA PDFs) are archived verbatim, kept forever, and —
+# being PII-bearing — never enter the repo. Rehearse the restore end to end:
+JOURNAL_OFFSITE_DIR=/Volumes/encrypted/atj npm run job -- run   # snapshot + off-site
+npm run job -- restore-check          # restore newest snapshot to scratch, verify it opens
+# See docs/durability-restore-rehearsal.md for the written-down rehearsal record.
+
 # The localhost UI — reads the same file, renders "no Trades yet" and the
 # latest run record. Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui

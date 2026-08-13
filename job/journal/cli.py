@@ -8,12 +8,30 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import db, equity, fills, flex, flex_client, secrets, stockbit, stops, trades
+from . import backup, db, equity, fills, flex, flex_client, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
+
+
+def _archive_source_file(db_path: str, *, book: str, kind: str, path: str) -> None:
+    """Copy a dropped/imported source file into the keep-forever raw archive.
+
+    The raw tier is what makes the DB reconstructible and lets a parser fix be
+    re-run over history (SPEC §13.5), so a document is archived *before* it is
+    parsed — even one that then quarantines or errors is kept. The archive dir
+    never enters the repo; the document is stored content-addressed and verbatim.
+    """
+    with open(path, "rb") as fh:
+        content = fh.read()
+    ext = path.rsplit(".", 1)[-1].lower() if "." in os.path.basename(path) else "bin"
+    backup.archive_raw(
+        backup.archive_dir_for(db_path), book=book, kind=kind, content=content, ext=ext
+    )
 
 
 def _format_summary(result: RunResult, db_path: str) -> str:
@@ -29,6 +47,11 @@ def _format_summary(result: RunResult, db_path: str) -> str:
         else:
             detail = f"error: {book.error}"
         lines.append(f"  {book.book:<3} {detail}")
+    if result.snapshot is not None:
+        off = f" (+ off-site {result.snapshot.offsite_path})" if result.snapshot.offsite_path else ""
+        lines.append(f"snapshot: {result.snapshot.path}{off}")
+    elif result.snapshot_error is not None:
+        lines.append(f"snapshot: skipped — {result.snapshot_error}")
     return "\n".join(lines)
 
 
@@ -49,6 +72,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
     try:
+        _archive_source_file(db_path, book="US", kind="flex-trades-xml", path=args.file)
         inserted = fills.import_flex_file(conn, args.file)
         total = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
     except flex.FlexError as exc:
@@ -67,6 +91,10 @@ def cmd_drop(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
     try:
+        # Archive the TC verbatim first (SPEC §13.5): a quarantined document is
+        # exactly what a later parser fix needs to be re-run over, so it is kept
+        # even though nothing lands in the ledger.
+        _archive_source_file(db_path, book="IDX", kind="stockbit-tc", path=args.file)
         inserted = fills.import_stockbit_file(conn, args.file)
         total = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
     except stockbit.QuarantineError as exc:
@@ -168,6 +196,13 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     client = _build_flex_client(warn=warnings.append)
     try:
         statement = client.fetch_statement(args.query_id)
+        # The fetched XML joins the keep-forever tier on disk too (SPEC §13.5):
+        # once a report ages out of Flex's reachable window it is gone, so the
+        # bytes as fetched are archived verbatim before parsing.
+        backup.archive_raw(
+            backup.archive_dir_for(db_path),
+            book="US", kind="flex-trades-xml", content=statement, ext="xml",
+        )
         inserted = fills.import_flex_text(conn, statement)
         total = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
     except (
@@ -200,6 +235,7 @@ def cmd_import_nav(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
     try:
+        _archive_source_file(db_path, book="US", kind="nav-flex-xml", path=args.file)
         with open(args.file, encoding="utf-8") as fh:
             captured = equity.import_nav_flex_text(conn, fh.read(), fetch_date=_today_iso())
         total = conn.execute(
@@ -222,6 +258,10 @@ def cmd_fetch_nav(args: argparse.Namespace) -> int:
     client = _build_flex_client(warn=warnings.append)
     try:
         statement = client.fetch_statement(args.query_id)
+        backup.archive_raw(
+            backup.archive_dir_for(db_path),
+            book="US", kind="nav-flex-xml", content=statement, ext="xml",
+        )
         captured = equity.import_nav_flex_text(conn, statement, fetch_date=_today_iso())
         total = conn.execute(
             "SELECT COUNT(*) AS n FROM equity_snapshot WHERE book='US'"
@@ -282,6 +322,39 @@ def cmd_equity_idx(args: argparse.Namespace) -> int:
         conn.close()
     print(f"recorded {written} IDX snapshot(s)  ({total} IDX snapshots)")
     return 0
+
+
+def cmd_restore_check(args: argparse.Namespace) -> int:
+    """Rehearse a restore end to end and print what was verified (SPEC §13.5, §14.1).
+
+    A backup that has not been restored is a belief. This restores a snapshot
+    into a scratch location, opens the journal against it, checks integrity and
+    the expected schema, and prints the transcript. Exits non-zero if the
+    restore did not verify, so it can gate a durability check in CI or by hand.
+    """
+    snapshot = args.snapshot
+    if snapshot is None:
+        snaps_dir = args.snapshots_dir or backup.snapshots_dir_for(
+            args.db or db.default_db_path()
+        )
+        snapshot = _latest_snapshot(snaps_dir)
+        if snapshot is None:
+            print(f"no snapshot found under {snaps_dir}", file=sys.stderr)
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="journal-restore-") as scratch:
+        report = backup.rehearse_restore(snapshot, scratch)
+        print(report.render())
+    return 0 if report.verified else 1
+
+
+def _latest_snapshot(snaps_dir: str) -> Optional[str]:
+    if not os.path.isdir(snaps_dir):
+        return None
+    names = sorted(
+        n for n in os.listdir(snaps_dir) if n.startswith("journal-") and n.endswith(".db")
+    )
+    return os.path.join(snaps_dir, names[-1]) if names else None
 
 
 def _add_db_argument(subparser: argparse.ArgumentParser) -> None:
@@ -413,6 +486,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(idx_p)
     idx_p.set_defaults(func=cmd_equity_idx)
+
+    restore_p = sub.add_parser(
+        "restore-check",
+        help="rehearse a restore: restore a DB snapshot to scratch and verify it opens",
+    )
+    restore_p.add_argument(
+        "snapshot",
+        nargs="?",
+        default=None,
+        help="path to a snapshot .db (default: the newest under the snapshots dir)",
+    )
+    restore_p.add_argument(
+        "--snapshots-dir",
+        default=None,
+        dest="snapshots_dir",
+        help="where to look for the newest snapshot (default: $JOURNAL_SNAPSHOTS_DIR or <db>/../snapshots)",
+    )
+    _add_db_argument(restore_p)
+    restore_p.set_defaults(func=cmd_restore_check)
     return parser
 
 

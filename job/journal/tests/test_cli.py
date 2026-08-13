@@ -37,6 +37,48 @@ class CliTest(unittest.TestCase):
             code = main(["run", "--db", self.db_path, "--as-of", "2026-08-13"])
         return code, buf.getvalue()
 
+    def _archive_files(self):
+        archive = os.path.join(self.tmp.name, "archive")
+        found = []
+        for root, _dirs, files in os.walk(archive):
+            for f in files:
+                found.append(os.path.join(root, f))
+        return found
+
+    def test_import_archives_the_raw_flex_xml(self):
+        # The Flex XML joins the keep-forever raw tier and never the repo
+        # (SPEC §13.5, #39).
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            main(["import", FIXTURE, "--db", self.db_path])
+        archived = self._archive_files()
+        self.assertEqual(len(archived), 1)
+        self.assertIn("flex-trades-xml", archived[0])
+        with open(FIXTURE, "rb") as a, open(archived[0], "rb") as b:
+            self.assertEqual(a.read(), b.read())
+
+    def test_quarantined_tc_is_still_archived(self):
+        # A shifted column quarantines with zero fills — but the raw document is
+        # kept so a parser fix can be re-run over it (SPEC §13.5).
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            code = main(["drop", TC_SHIFTED, "--db", self.db_path])
+        self.assertEqual(code, 1)  # quarantined
+        archived = self._archive_files()
+        self.assertEqual(len(archived), 1)
+        self.assertIn("stockbit-tc", archived[0])
+
+    def test_restore_check_verifies_a_snapshot_from_a_run(self):
+        # A run leaves a snapshot; restore-check restores it and reports OK.
+        self._run()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["restore-check", "--db", self.db_path])
+        self.assertEqual(code, 0)
+        out = buf.getvalue()
+        self.assertIn("VERIFIED", out)
+        self.assertIn("integrity_check: ok", out)
+
     def test_run_exits_zero_and_creates_file(self):
         code, out = self._run()
         self.assertEqual(code, 0)
