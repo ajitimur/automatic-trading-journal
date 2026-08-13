@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -118,6 +118,31 @@ CREATE TABLE IF NOT EXISTS bar_fetch (
     zero_volume_filtered INTEGER NOT NULL,
     span_ok              INTEGER NOT NULL,   -- 1 pass | 0 repair required
     span_detail          TEXT NOT NULL
+);
+
+-- Market regime as a property of a market on a date (SPEC §8, #30), keyed
+-- (book, date) and computed once per book per day from the book's benchmark
+-- series. A Trade holds two references into this table — entry and exit — and
+-- never copies the values, so the cross-market question stays answerable by
+-- joining on date. All six primitives are stored regardless of the label
+-- (close above/below MA10/20/50 and each MA's slope sign) so the label can be
+-- re-cut retroactively with no refetch. label and the primitives are NULL when
+-- the benchmark has too little history to compute them (SPEC §7.8); bar_date
+-- is the bar actually used for the prior-close stamp (SPEC §8.5).
+CREATE TABLE IF NOT EXISTS regime_snapshot (
+    book             TEXT NOT NULL,
+    date             TEXT NOT NULL,        -- the (book, date) key — decision date
+    bar_date         TEXT NOT NULL,        -- prior trading day's close actually used
+    label            TEXT,                 -- 5-level ordinal, NULL if insufficient history
+    close_above_ma10 INTEGER,              -- boolean 0/1, NULL if < 10 bars
+    close_above_ma20 INTEGER,
+    close_above_ma50 INTEGER,
+    slope_ma10       INTEGER,              -- sign -1/0/1, NULL if < 15 bars
+    slope_ma20       INTEGER,
+    slope_ma50       INTEGER,
+    pct_off_52w_high REAL,                 -- (close/max(high,252) - 1)*100, NULL if < 252 bars
+    realized_vol_20d REAL,                 -- std of 20 daily log returns, NULL if < 21 bars
+    PRIMARY KEY (book, date)
 );
 """
 
