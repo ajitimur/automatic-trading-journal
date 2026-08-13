@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -168,6 +168,46 @@ CREATE TABLE IF NOT EXISTS regime_snapshot (
     pct_off_52w_high REAL,                 -- (close/max(high,252) - 1)*100, NULL if < 252 bars
     realized_vol_20d REAL,                 -- std of 20 daily log returns, NULL if < 21 bars
     PRIMARY KEY (book, date)
+);
+
+-- Entry-dated setup enrichment: sections A and B of the field list (SPEC
+-- §7.1–§7.2, #29), one row per Trade keyed by trade_id. Everything anchors on
+-- the prior close P₋₁ (SPEC §6.3) except volume_ratio, which reads the entry
+-- day's own volume. Continuous primitives are stored and booleans/orderings/
+-- units derived on read (SPEC §6.4): ma_dist_N carries the signed distance in
+-- ADR units and "above MA50" is ma_dist_50 > 0; stack_state is the one stored
+-- categorical, the symbol's own MA ordering (setup selection only, never the
+-- benchmark's regime). A field is NULL when the instrument's history is too
+-- short to compute it honestly (SPEC §7.8); insufficient_history is the
+-- comma-joined list of those field names, kept strictly distinct from a
+-- span-check failure (which raises before this row is ever written). bar_date
+-- records the prior-close bar actually used so the as-of date stays honest.
+CREATE TABLE IF NOT EXISTS trade_enrichment (
+    trade_id             INTEGER PRIMARY KEY REFERENCES trade(id),
+    book                 TEXT NOT NULL,
+    symbol               TEXT NOT NULL,
+    entry_date           TEXT NOT NULL,
+    bar_date             TEXT NOT NULL,     -- prior close P₋₁ actually used
+    adr_pct              REAL,              -- normalizer, NULL if < 20 bars
+    ma_10                REAL,
+    ma_20                REAL,
+    ma_50                REAL,
+    ma_100               REAL,
+    ma_200               REAL,              -- SMA, NULL if < N bars
+    ma_dist_10           REAL,
+    ma_dist_20           REAL,
+    ma_dist_50           REAL,
+    ma_dist_100          REAL,
+    ma_dist_200          REAL,              -- signed, in ADR units
+    stack_state          TEXT,              -- aligned_up|aligned_down|mixed, NULL if any MA null
+    prior_move_21d       REAL,
+    prior_move_63d       REAL,
+    prior_move_126d      REAL,              -- close-to-close over N trading days
+    pct_off_52w_high     REAL,              -- NULL if < 252 bars
+    rs_63d               REAL,              -- symbol - benchmark, NULL if either < 63 bars
+    volume_ratio         REAL,              -- entry-day volume / 50-bar mean
+    avg_turnover_20d     REAL,              -- native currency, NULL if < 20 bars
+    insufficient_history TEXT NOT NULL DEFAULT ''  -- comma-joined nulled field names
 );
 """
 
