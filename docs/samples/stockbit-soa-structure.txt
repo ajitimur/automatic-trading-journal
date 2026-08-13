@@ -1,0 +1,37 @@
+Stockbit Statement of Account — STRUCTURE ONLY
+==============================================
+
+Extracted with `pdftotext -layout` from one real monthly SoA (July 2026).
+
+Quantities and prices are kept verbatim — they carry the lots-vs-shares and
+weighted-average-price answers. Client name, account number, balances and
+settlement amounts are scrubbed.
+
+Ledger header (verbatim):
+
+  Tr. Date     Due Date     Reference Description                    Db Amount    Cr Amount    Ending Balance Days Interest
+
+Representative rows (amounts scrubbed):
+
+  06/07/2026   08/07/2026   I           Trx on 06/07/2026            <AMT>   <AMT>   (<AMT>)   2   (<AMT>)
+                              0090126 B: RG GULA  35,000 @ 625      =<NET>
+                              0308221 S: RG MARK  96,800 @ 977.2882 =<NET>
+                              0308222 S: RG MINA  50,000 @ 266      =<NET>
+  08/07/2026   08/07/2026   P 559152 Payment to: <CLIENT NAME>       <AMT>   0   0   0
+  09/07/2026   13/07/2026   I           Trx on 09/07/2026            0   <AMT>   (<AMT>)   3   0
+                              0508484 S: RG MBSS  12,900 @ 2,520     =<NET>
+                              0508485 S: RG WIFI  20,600 @ 1,608.3981=<NET>
+  14/07/2026   16/07/2026   I           Trx on 14/07/2026            0   <AMT>   (<AMT>)   1   0
+                              0157614 B: RG FUTR  78,400 @ 230      =<NET>
+                              0157615 B: RG RATU   7,300 @ 5,550    =<NET>
+                              0626922 S: RG FUTR  78,400 @ 220      =<NET>
+
+Row grammar for the trade sub-lines:
+
+  <reference> <B|S>: <board> <symbol> <quantity> @ <price>=<net amount>
+
+  B / S     buy or sell
+  RG        IDX board code (Reguler)
+  quantity  SHARES, always a multiple of 100 (not lots)
+  price     may carry up to 4 decimals — a weighted average, not a tick price
+  net       gross +/- fees, already baked in; fees are never itemised
