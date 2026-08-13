@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -220,6 +220,77 @@ CREATE TABLE IF NOT EXISTS trade_enrichment (
     volume_ratio         REAL,              -- entry-day volume / 50-bar mean
     avg_turnover_20d     REAL,              -- native currency, NULL if < 20 bars
     insufficient_history TEXT NOT NULL DEFAULT ''  -- comma-joined nulled field names
+);
+
+-- Exit geometry: section D of the field list (SPEC §7.4, #33), one row per
+-- Trade keyed by trade_id. Section B's formulas recomputed at a *second* anchor
+-- — the final exit day's close C_x — so exit quality gets the same chart
+-- geometry the entry got. Entry anchors on the prior close, exit on its own
+-- close: this asymmetry is deliberate (SPEC §6.3) and the exit day's close is a
+-- decision input (the exit rule is triggered by a close), not a leak. Only the
+-- section-B twins section D reuses are stored (adr_pct, the five ma_dist,
+-- stack_state, rs_63d) plus exit_avg_price beside C_x so the gap between what was
+-- got and what the day was worth stays derivable. ma_N_at_exit are stored as the
+-- continuous primitives (ma_dist derives from them and adr_pct) for full
+-- symmetry with trade_enrichment. bar_date is the bar actually used for C_x.
+-- insufficient_history is the comma-joined list of history-nulled field names,
+-- distinct from a span-check failure (which raises before this row is written).
+CREATE TABLE IF NOT EXISTS trade_exit_geometry (
+    trade_id             INTEGER PRIMARY KEY REFERENCES trade(id),
+    book                 TEXT NOT NULL,
+    symbol               TEXT NOT NULL,
+    exit_date            TEXT NOT NULL,     -- final exit date, the C_x date
+    bar_date             TEXT NOT NULL,     -- bar actually used for C_x
+    exit_avg_price       REAL,              -- quantity-weighted mean of exit fills
+    adr_pct_at_exit      REAL,              -- normalizer at C_x, NULL if < 20 bars
+    ma_10_at_exit        REAL,
+    ma_20_at_exit        REAL,
+    ma_50_at_exit        REAL,
+    ma_100_at_exit       REAL,
+    ma_200_at_exit       REAL,              -- SMA at C_x, NULL if < N bars
+    ma_dist_10_at_exit   REAL,
+    ma_dist_20_at_exit   REAL,
+    ma_dist_50_at_exit   REAL,
+    ma_dist_100_at_exit  REAL,
+    ma_dist_200_at_exit  REAL,              -- signed, in ADR units at C_x
+    stack_state_at_exit  TEXT,              -- aligned_up|aligned_down|mixed
+    rs_63d_at_exit       REAL,              -- symbol - benchmark move to C_x
+    insufficient_history TEXT NOT NULL DEFAULT ''
+);
+
+-- In-trade excursion, Trade-level scope (SPEC §7.5, #33): one row per Trade over
+-- entry date → *final* exit date, position-agnostic. Measures the move, which is
+-- what setup selection asks about. Raw primitives only — the max High, the min
+-- Low, and the dates they landed on; R, ADR and % forms derive on read (SPEC
+-- §6.4), never stored, so the primitives stay usable as prices for a no-stop
+-- Trade. Storing the dates is what lets the review timeline be drawn later with
+-- no new field ("the high came on day 2 and I held nineteen more").
+CREATE TABLE IF NOT EXISTS trade_excursion (
+    trade_id   INTEGER PRIMARY KEY REFERENCES trade(id),
+    start_date TEXT NOT NULL,               -- entry date
+    end_date   TEXT NOT NULL,               -- final exit date
+    mfe_high   REAL,                         -- maximum High in the window
+    mfe_date   TEXT,                         -- the date it occurred
+    mae_low    REAL,                         -- minimum Low in the window
+    mae_date   TEXT
+);
+
+-- In-trade excursion, per-Exit scope (SPEC §7.5, #33): one row per Exit over
+-- entry date → *that Exit's* date, keyed by the trade_exit id. This is the
+-- exit-quality grading unit — "was the day-3 partial early?" is a question only
+-- this scope can answer, and a multi-exit Trade carries a distinct window per
+-- Exit. Quantity-weighting the two scopes into one number was rejected: it
+-- answers neither. Same raw primitives as the Trade-level table; forms derive on
+-- read. trade_id rides along so a Trade's Exits are queryable without a join.
+CREATE TABLE IF NOT EXISTS exit_excursion (
+    exit_id    INTEGER PRIMARY KEY REFERENCES trade_exit(id),
+    trade_id   INTEGER NOT NULL REFERENCES trade(id),
+    start_date TEXT NOT NULL,               -- entry date
+    end_date   TEXT NOT NULL,               -- this Exit's date
+    mfe_high   REAL,
+    mfe_date   TEXT,
+    mae_low    REAL,
+    mae_date   TEXT
 );
 
 -- The keep-forever raw tier (SPEC §13.5, #31). Raw source documents as fetched
