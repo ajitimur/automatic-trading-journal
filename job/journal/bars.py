@@ -104,39 +104,32 @@ def span_check(raw: Sequence[Bar], requested_start: str, requested_end: str) -> 
     """
     present = sorted({b.date for b in raw})
     zero_volume = sum(1 for b in raw if b.volume == 0)
-    rows = len(raw)
+    covered_start = present[0] if present else None
+    covered_end = present[-1] if present else None
 
     if not present:
-        return SpanCheck(
-            ok=False,
-            requested_start=requested_start,
-            requested_end=requested_end,
-            covered_start=None,
-            covered_end=None,
-            rows_fetched=rows,
-            zero_volume_filtered=zero_volume,
-            detail="empty series — no bars returned",
-        )
-
-    covered_start, covered_end = present[0], present[-1]
-    ok = covered_start <= requested_start and covered_end >= requested_end
-    if ok:
+        ok = False
+        detail = "empty series — no bars returned"
+    elif covered_start <= requested_start and covered_end >= requested_end:
+        ok = True
         detail = (
             f"covers {requested_start}..{requested_end}"
             f" ({zero_volume} zero-volume day(s) filtered)"
         )
     else:
+        ok = False
         detail = (
             f"series {covered_start}..{covered_end} does not cover required "
             f"{requested_start}..{requested_end} — repair required"
         )
+
     return SpanCheck(
         ok=ok,
         requested_start=requested_start,
         requested_end=requested_end,
         covered_start=covered_start,
         covered_end=covered_end,
-        rows_fetched=rows,
+        rows_fetched=len(raw),
         zero_volume_filtered=zero_volume,
         detail=detail,
     )
