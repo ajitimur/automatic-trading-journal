@@ -119,8 +119,8 @@ class Proposal:
         An ``orphan-exit`` has nothing journalled to come out of; an
         ``exit-allocation`` with an ``over_allocated`` remainder could only be
         partially filled. Both park until the missing entry is journalled (SPEC
-        §5.2). ``quarantine`` and ``enrichment-repair`` are attention items, not
-        confirmable-in-place, and count as parked for the skip.
+        §5.2). ``quarantine``, ``enrichment-repair`` and ``drift`` are attention
+        items, not confirmable-in-place, and count as parked for the skip.
         """
         if self.kind in ("orphan-exit", "quarantine", "enrichment-repair", "drift"):
             return True
@@ -171,6 +171,25 @@ def latest_fills(conn: sqlite3.Connection) -> List[sqlite3.Row]:
 def _entry_date(executed_at: str) -> str:
     """The calendar trade date of a fill — the cohort axis (ADR 0001)."""
     return executed_at[:10]
+
+
+def _derive_buy_cohorts(
+    fills: Sequence[sqlite3.Row],
+) -> Dict[Tuple[str, str, str], Tuple[float, float]]:
+    """Entry-day cohort → (quantity, quantity-weighted avg price) from BUY fills.
+
+    The one place the entry side is derived (ADR 0001): a quantity-weighted mean
+    so ``avg_price * qty`` equals the cash that left (SPEC §3.1). Both the confirm
+    re-derivation and the drift override read the same shape from here.
+    """
+    totals: Dict[Tuple[str, str, str], Tuple[float, float]] = {}
+    for f in fills:
+        if f["side"] != "BUY":
+            continue
+        key = (f["book"], f["symbol"], _entry_date(f["executed_at"]))
+        qty, weighted = totals.get(key, (0.0, 0.0))
+        totals[key] = (qty + abs(f["quantity"]), weighted + abs(f["quantity"]) * f["price"])
+    return {k: (q, w / q if q else 0.0) for k, (q, w) in totals.items()}
 
 
 @dataclass(frozen=True)
@@ -245,6 +264,7 @@ def _entry_proposals(
             continue
         key = (f["book"], f["symbol"], _entry_date(f["executed_at"]))
         cohorts.setdefault(key, []).append(f)
+    totals = _derive_buy_cohorts(fills)
 
     # Sibling entry days in this same batch count too: a Monday and a Wednesday
     # cohort dropped together are two Trades, and each says so about the other.
@@ -254,10 +274,7 @@ def _entry_proposals(
 
     proposals: List[Proposal] = []
     for (book, symbol, date), group in cohorts.items():
-        qty = sum(abs(f["quantity"]) for f in group)
-        # Quantity-weighted mean: avg_price * qty == the cash that left (SPEC §3.1).
-        weighted = sum(abs(f["quantity"]) * f["price"] for f in group)
-        avg_price = weighted / qty if qty else 0.0
+        qty, avg_price = totals[(book, symbol, date)]
         prior = committed.get((book, symbol, date))
 
         if prior is None:
@@ -566,10 +583,7 @@ def confirm(
     _rederive_entry_sides(conn)
 
     # Resolve every cohort key to its trade id (committed just now or earlier).
-    ids = {
-        (r["book"], r["symbol"], r["entry_date"]): r["id"]
-        for r in conn.execute("SELECT id, book, symbol, entry_date FROM trade")
-    }
+    ids = _trade_ids(conn)
     # Working open quantities, so overrides can be bounds-checked as we go.
     open_qty = _working_open_qty(conn)
 
@@ -593,6 +607,14 @@ def confirm(
     return result
 
 
+def _trade_ids(conn: sqlite3.Connection) -> Dict[Tuple[str, str, str], int]:
+    """Cohort key → committed trade id, for resolving an allocation to its target."""
+    return {
+        (r["book"], r["symbol"], r["entry_date"]): r["id"]
+        for r in conn.execute("SELECT id, book, symbol, entry_date FROM trade")
+    }
+
+
 def _working_open_qty(conn: sqlite3.Connection) -> Dict[int, float]:
     """Each Trade's derived open quantity — entry less everything allocated to it."""
     return {
@@ -613,13 +635,7 @@ def _rederive_entry_sides(conn: sqlite3.Connection) -> None:
     is left unchanged. Frozen Trades are never rewritten; a change to one is drift
     (SPEC §5.3), applied only through :func:`apply_drift`.
     """
-    derived: Dict[Tuple[str, str, str], Tuple[float, float]] = {}
-    for f in latest_fills(conn):
-        if f["side"] != "BUY":
-            continue
-        key = (f["book"], f["symbol"], _entry_date(f["executed_at"]))
-        qty, weighted = derived.get(key, (0.0, 0.0))
-        derived[key] = (qty + abs(f["quantity"]), weighted + abs(f["quantity"]) * f["price"])
+    derived = _derive_buy_cohorts(latest_fills(conn))
     for t in conn.execute(
         "SELECT id, book, symbol, entry_date, entry_qty, entry_avg_price, frozen FROM trade"
     ):
@@ -628,8 +644,7 @@ def _rederive_entry_sides(conn: sqlite3.Connection) -> None:
         got = derived.get((t["book"], t["symbol"], t["entry_date"]))
         if got is None:
             continue
-        qty, weighted = got
-        avg = weighted / qty if qty else 0.0
+        qty, avg = got
         if not (_close(qty, t["entry_qty"]) and _close(avg, t["entry_avg_price"])):
             conn.execute(
                 "UPDATE trade SET entry_qty = ?, entry_avg_price = ? WHERE id = ?",
@@ -735,10 +750,7 @@ def bulk_confirm_exits(
     """
     reasons = reasons or {}
     result = ConfirmResult()
-    ids = {
-        (r["book"], r["symbol"], r["entry_date"]): r["id"]
-        for r in conn.execute("SELECT id, book, symbol, entry_date FROM trade")
-    }
+    ids = _trade_ids(conn)
     open_qty = _working_open_qty(conn)
 
     touched: set[int] = set()
@@ -917,19 +929,14 @@ def apply_drift(conn: sqlite3.Connection, trade_id: int) -> None:
     ).fetchone()
     if t is None:
         raise ValueError(f"no Trade with id {trade_id}")
-    qty = weighted = 0.0
-    for f in latest_fills(conn):
-        if f["side"] != "BUY":
-            continue
-        if (f["book"], f["symbol"], _entry_date(f["executed_at"])) == (
-            t["book"], t["symbol"], t["entry_date"]
-        ):
-            qty += abs(f["quantity"])
-            weighted += abs(f["quantity"]) * f["price"]
-    if qty:
+    got = _derive_buy_cohorts(latest_fills(conn)).get(
+        (t["book"], t["symbol"], t["entry_date"])
+    )
+    if got and got[0]:
+        qty, avg = got
         conn.execute(
             "UPDATE trade SET entry_qty = ?, entry_avg_price = ? WHERE id = ?",
-            (qty, weighted / qty, trade_id),
+            (qty, avg, trade_id),
         )
         conn.commit()
 
