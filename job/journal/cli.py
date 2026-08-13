@@ -441,6 +441,10 @@ def cmd_counterfactual(args: argparse.Namespace) -> int:
                 cost = tc.deviation_cost()
                 cost_str = f"{cost:+.2f}" if cost is not None else "—"
                 flags = " [stopless]" if tc.stopless else ""
+                # dividend_drag_r sits *beside* Realized R and is omitted entirely
+                # when null (§7.7) — absent, it reads as unknown, not zero.
+                if tc.dividend_drag_r is not None:
+                    flags += f" [div_drag {tc.dividend_drag_r:.2f}R]"
                 print(
                     f"  Trade {tc.trade_id} {tc.symbol} {tc.entry_date}  "
                     f"fit {tc.best_fit()}  partial {tc.partial_state}  "

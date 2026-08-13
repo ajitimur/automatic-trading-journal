@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -378,7 +378,12 @@ CREATE TABLE IF NOT EXISTS trade_counterfactual (
     exit_path             TEXT NOT NULL,        -- stop_hit|trail|discretionary|other
     trail_exit_delta      INTEGER,              -- signed days, actual − nominal; NULL if capped
     nominal_status        TEXT NOT NULL,        -- resolved | capped | pending
-    fit_vector            TEXT NOT NULL         -- JSON {variant: trading-day distance}
+    fit_vector            TEXT NOT NULL,        -- JSON {variant: trading-day distance}
+    -- Corporate-actions drag (§7.7, #36): sum(dividend_per_share over the Trade's
+    -- window) / (entry_avg_price − stop). Sits *beside* Realized R, never folded
+    -- in. Trade-level only, no per-variant equivalent. NULL — not zero — where the
+    -- window crossed no ex-date, so absent coverage reads as unknown.
+    dividend_drag_r       REAL
 );
 
 -- The per-variant raw exit legs (SPEC §10.7, #35), one row per (trade_id,
@@ -432,6 +437,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     _migrate_fill_columns(conn)
     _migrate_trade_columns(conn)
     _migrate_trade_exit_columns(conn)
+    _migrate_counterfactual_columns(conn)
     conn.commit()
     return conn
 
@@ -496,3 +502,23 @@ def _migrate_trade_exit_columns(conn: sqlite3.Connection) -> None:
     for name, decl in _TRADE_EXIT_COLUMNS.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE trade_exit ADD COLUMN {name} {decl}")
+
+
+# The corporate-actions drag added for #36 (§7.7). An earlier build (#35) created
+# `trade_counterfactual` without it; bring it forward with the same
+# non-destructive ALTER. Nullable, because the field is NULL — not zero — where
+# the Trade's window crossed no ex-date, so absent coverage reads as unknown.
+_COUNTERFACTUAL_COLUMNS = {
+    "dividend_drag_r": "REAL",
+}
+
+
+def _migrate_counterfactual_columns(conn: sqlite3.Connection) -> None:
+    existing = {
+        r["name"] for r in conn.execute("PRAGMA table_info(trade_counterfactual)")
+    }
+    for name, decl in _COUNTERFACTUAL_COLUMNS.items():
+        if name not in existing:
+            conn.execute(
+                f"ALTER TABLE trade_counterfactual ADD COLUMN {name} {decl}"
+            )

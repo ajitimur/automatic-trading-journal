@@ -145,6 +145,162 @@ class LimitLockTest(unittest.TestCase):
         self.assertTrue(r.legs[-1].limit_locked)
 
 
+class DeviationCostNullTest(unittest.TestCase):
+    """`deviation_cost_r` nulls where the number cannot be trusted (§10.8, #36).
+
+    Beyond the cap and the absent-stop tiers, the R form nulls on a limit-locked
+    nominal leg (a fill nobody could have obtained) and on a mismatched ex-date
+    crossing between the actual and nominal windows (else the rule reads as
+    outperforming when it merely dodged a dividend). Nulling is stronger than a
+    flag, because a flag can be read past.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _trade(self, *, entry, qty, avg, stop, symbol="AAA"):
+        cur = self.conn.execute(
+            "INSERT INTO trade (book, symbol, entry_date, entry_qty, "
+            "entry_avg_price, status, stop, stop_provenance) "
+            "VALUES ('US', ?, ?, ?, ?, 'closed', ?, 'recorded')",
+            (symbol, entry, qty, avg, stop))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def _exit(self, trade_id, exit_date, qty, price, reason=None):
+        self.conn.execute(
+            "INSERT INTO trade_exit (trade_id, source, source_ref, exit_date, "
+            "quantity, price, reason) VALUES (?, 'ibkr', ?, ?, ?, ?, ?)",
+            (trade_id, f"ref-{exit_date}", exit_date, qty, price, reason))
+        self.conn.commit()
+
+    def test_deviation_cost_r_nulls_on_a_limit_locked_nominal_leg(self):
+        # The nominal (ma10/day3) trail fill lands on a limit-locked bar.
+        closes = [100] * 15 + [90] + [88] * 60
+        bars = _bars(closes)
+        lock = Bar(date=bars[16].date, open=88, high=88, low=88, close=88,
+                   volume=500)
+        bars[16] = lock
+        tid = self._trade(entry=bars[10].date, qty=30, avg=100.0, stop=1.0)
+        self._exit(tid, bars[20].date, 30, 85.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        self.assertEqual(tc.nominal_status, cf.RESOLVED)
+        self.assertIsNotNone(tc.deviation_cost())      # cash still reads
+        self.assertIsNone(tc.deviation_cost_r())        # but the R form nulls
+
+    def test_deviation_cost_r_nulls_on_a_mismatched_ex_date_crossing(self):
+        # Nominal trail exits at index 16; the actual runs to index 30, so a
+        # dividend at index 20 falls in the actual window but not the nominal's.
+        closes = [100] * 15 + [90] + [88] * 60
+        divs = [0.0] * 20 + [2.0] + [0.0] * 60
+        bars = _bars(closes, dividends=divs)
+        tid = self._trade(entry=bars[10].date, qty=30, avg=100.0, stop=1.0)
+        self._exit(tid, bars[30].date, 30, 85.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        self.assertEqual(tc.nominal_status, cf.RESOLVED)
+        self.assertIsNotNone(tc.deviation_cost())
+        self.assertIsNone(tc.deviation_cost_r())
+
+
+class DividendDragTest(unittest.TestCase):
+    """`dividend_drag_r` — a corporate-actions field beside Realized R (§7.7, #36).
+
+    Detecting the drop is free (yfinance ships dividends in the same call); it
+    sits *beside* Realized R, never folded in. Null — not zero — where the window
+    crossed no ex-date, so absent coverage reads as *unknown* rather than *no
+    dividend*. Trade-level only, with no per-variant equivalent.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _trade(self, *, entry, qty, avg, stop, provenance="recorded", symbol="AAA"):
+        cur = self.conn.execute(
+            "INSERT INTO trade (book, symbol, entry_date, entry_qty, "
+            "entry_avg_price, status, stop, stop_provenance) "
+            "VALUES ('US', ?, ?, ?, ?, 'closed', ?, ?)",
+            (symbol, entry, qty, avg, stop, provenance))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def _exit(self, trade_id, exit_date, qty, price, reason=None):
+        self.conn.execute(
+            "INSERT INTO trade_exit (trade_id, source, source_ref, exit_date, "
+            "quantity, price, reason) VALUES (?, 'ibkr', ?, ?, ?, ?, ?)",
+            (trade_id, f"ref-{exit_date}", exit_date, qty, price, reason))
+        self.conn.commit()
+
+    def test_drag_computes_from_dividends_and_leaves_realized_r_untouched(self):
+        # A 3.5-per-share dividend crosses the window; stop 8 below a 100 entry.
+        divs = [0.0] * 3 + [3.5] + [0.0] * 3
+        bars = _bars([100, 101, 102, 103, 104, 105, 106], dividends=divs)
+        tid = self._trade(entry=bars[0].date, qty=30, avg=100.0, stop=92.0)
+        self._exit(tid, bars[6].date, 30, 106.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        # sum(dividend) / (entry_avg_price − stop) = 3.5 / 8 = 0.4375R phantom.
+        self.assertAlmostEqual(tc.dividend_drag_r, 3.5 / 8.0)
+        # Realized R is a pure price measure — the dividend never enters it.
+        self.assertAlmostEqual(
+            cf.realized_r(100.0, 106.0, 92.0), (106.0 - 100.0) / 8.0)
+
+    def test_null_not_zero_when_no_ex_date_was_crossed(self):
+        # No dividend anywhere in the window: unknown, never a zero.
+        bars = _bars([100, 101, 102, 103, 104, 105, 106])
+        tid = self._trade(entry=bars[0].date, qty=30, avg=100.0, stop=92.0)
+        self._exit(tid, bars[6].date, 30, 106.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        self.assertIsNone(tc.dividend_drag_r)
+
+    def test_dividend_outside_the_window_does_not_count(self):
+        # The only dividend sits after the final exit — the window crossed none.
+        divs = [0.0] * 6 + [3.5]
+        bars = _bars([100, 101, 102, 103, 104, 105, 106], dividends=divs)
+        tid = self._trade(entry=bars[0].date, qty=30, avg=100.0, stop=92.0)
+        self._exit(tid, bars[3].date, 30, 103.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        self.assertIsNone(tc.dividend_drag_r)
+
+    def test_no_stop_trade_has_no_drag_denominator(self):
+        divs = [0.0] * 3 + [3.5] + [0.0] * 3
+        bars = _bars([100, 101, 102, 103, 104, 105, 106], dividends=divs)
+        tid = self._trade(entry=bars[0].date, qty=30, avg=100.0, stop=None,
+                          provenance=None)
+        self._exit(tid, bars[6].date, 30, 106.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        self.assertIsNone(tc.dividend_drag_r)
+
+    def test_trade_level_only_with_no_per_variant_drag(self):
+        divs = [0.0] * 3 + [3.5] + [0.0] * 3
+        bars = _bars([100, 101, 102, 103, 104, 105, 106], dividends=divs)
+        tid = self._trade(entry=bars[0].date, qty=30, avg=100.0, stop=92.0)
+        self._exit(tid, bars[6].date, 30, 106.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        # The drag lives on the Trade; no VariantResult carries an equivalent.
+        for v in tc.variants:
+            self.assertFalse(hasattr(v, "dividend_drag_r"))
+
+    def test_drag_is_pinned_and_roundtrips_through_the_store(self):
+        divs = [0.0] * 3 + [3.5] + [0.0] * 3
+        bars = _bars([100, 101, 102, 103, 104, 105, 106], dividends=divs)
+        tid = self._trade(entry=bars[0].date, qty=30, avg=100.0, stop=92.0)
+        self._exit(tid, bars[6].date, 30, 106.0, reason="discretionary")
+        tc = cf.compute_trade(self.conn, tid, bars)
+        store = cf.CounterfactualStore(self.conn)
+        store.upsert(tid, tc)
+        got = store.get(tid)
+        self.assertAlmostEqual(got.dividend_drag_r, 3.5 / 8.0)
+
+
 class TradeLevelTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

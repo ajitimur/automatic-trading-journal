@@ -408,6 +408,7 @@ class TradeCounterfactual:
     fit_vector: Dict[str, int]
     variants: Tuple[VariantResult, ...]
     actual_exits: Tuple[ActualExit, ...]
+    dividend_drag_r: Optional[float] = None
 
     @property
     def excluded_from_cross_trade_aggregate(self) -> bool:
@@ -667,6 +668,43 @@ def compute_trade(
     )
 
 
+def dividend_drag_r(
+    bars: Sequence[Bar],
+    *,
+    entry_date: str,
+    entry_avg_price: float,
+    stop: Optional[float],
+    window_end: Optional[str],
+) -> Optional[float]:
+    """``sum(dividend_per_share over the window) / (entry_avg_price − stop)`` (§7.7).
+
+    A corporate-actions field that sits **beside** Realized R, never folded in:
+    Realized R stays a pure price measure with no dividend term, ever. The drop
+    is free to detect — yfinance ships dividends in the same call as the bars —
+    while attributing the *cash* would need the same FIFO machinery as exits, so
+    the field is the arithmetic drag over fields the Trade already stores.
+
+    **Null, not zero**, where the window crossed no ex-date: absent coverage must
+    read as *unknown*, never as *no dividend* (§7.7, §10.8). ``None`` too without
+    a stop (no R denominator) or without a window to sum over. **Trade-level only,
+    with no per-variant equivalent** — the Counterfactual does not adjust for
+    ex-date gaps, an ex-date drop being a real price move on the chart the trader
+    watched.
+    """
+    if stop is None or window_end is None:
+        return None
+    denom = entry_avg_price - stop
+    if denom == 0:
+        return None
+    total = sum(
+        b.dividend for b in bars
+        if b.dividend and entry_date < b.date <= window_end
+    )
+    if not total:
+        return None
+    return total / denom
+
+
 def _assemble(
     *, trade_id, book, symbol, entry_date, entry_qty, entry_avg_price, stop,
     stop_provenance, bars, actual_exits,
@@ -701,6 +739,16 @@ def _assemble(
         if actual_exits else None
     )
 
+    # The dividend drag is pinned over the actual Trade's window — entry to the
+    # final real exit — Trade-level only (§7.7). No exit means no window to sum.
+    window_end = (
+        max(e.exit_date for e in actual_exits) if actual_exits else None
+    )
+    drag_r = dividend_drag_r(
+        bars, entry_date=entry_date, entry_avg_price=entry_avg_price,
+        stop=stop, window_end=window_end,
+    )
+
     tc = TradeCounterfactual(
         trade_id=trade_id, book=book, symbol=symbol, entry_date=entry_date,
         entry_qty=entry_qty, entry_avg_price=entry_avg_price, stop=stop,
@@ -712,6 +760,7 @@ def _assemble(
         exit_path=_exit_path(final_reason),
         trail_exit_delta=trail_exit_delta, nominal_status=nominal_status,
         fit_vector=fit_vector, variants=tuple(variants), actual_exits=actual_exits,
+        dividend_drag_r=drag_r,
     )
     object.__setattr__(
         tc, "_dividend_dates",
@@ -810,6 +859,7 @@ _TRADE_COLUMNS = (
     "stop", "stop_provenance", "ruleset_version", "nominal_variant", "stopless",
     "partial_state", "partial_timing_delta", "actual_partial_fraction",
     "exit_path", "trail_exit_delta", "nominal_status", "fit_vector",
+    "dividend_drag_r",
 )
 
 _TRADE_UPDATE = tuple(c for c in _TRADE_COLUMNS if c != "trade_id")
@@ -871,6 +921,7 @@ class CounterfactualStore:
                 tc.partial_state, tc.partial_timing_delta,
                 tc.actual_partial_fraction, tc.exit_path, tc.trail_exit_delta,
                 tc.nominal_status, json.dumps(tc.fit_vector),
+                tc.dividend_drag_r,
             ),
         )
         for v in tc.variants:
@@ -920,4 +971,5 @@ class CounterfactualStore:
             nominal_status=row["nominal_status"],
             fit_vector=json.loads(row["fit_vector"]),
             variants=variants, actual_exits=actual_exits,
+            dividend_drag_r=row["dividend_drag_r"],
         )

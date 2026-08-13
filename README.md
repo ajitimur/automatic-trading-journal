@@ -82,6 +82,12 @@ npm run job -- risk               # every book; --book US|IDX to limit
 # at read time from the stored six-way trading-day distance vector; a Trade
 # stopped out before the band is not_applicable, the 60-day cap nulls its deltas
 # without fabricating an exit, and no-stop Trades run trail-only and are flagged.
+# A leg is marked limit_locked on the OHLC-equal, volume-positive bar (§10.5), and
+# that mark — like a mismatched ex-date crossing — nulls deviation_cost_r (§10.8),
+# a null being stronger than a flag. dividend_drag_r (§7.7) sits *beside* Realized
+# R, computed from dividends shipped with the bars; it is Trade-level only, and
+# null — not zero — where the window crossed no ex-date, so absent coverage reads
+# as unknown.
 npm run job -- counterfactual     # every book; --book US|IDX to limit
 
 # Durability (SPEC §13.5). Every successful `run` leaves a timestamped
