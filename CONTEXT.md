@@ -64,11 +64,23 @@ _Avoid_: Size, allocation
 A Trade's outcome expressed in multiples of the risk it took. Derived.
 _Avoid_: R multiple, RR, reward ratio
 
+**Dividend Drag**:
+How much of a Trade's Realized R is owed to a distribution paid during it rather than to the price move. The journal measures price and not total return, so a Trade spanning an ex-date carries a loss it never really took; Dividend Drag states the size of that gap without correcting for it. Has no meaning where the Trade spanned no distribution, which is not the same as a Drag of zero.
+_Avoid_: Dividend, yield, total return, adjustment
+
 **Chasing**:
 Entering so far above the Trade's stop that the gap between the two exceeds a typical day's range — the symbol must travel more than an average day against the Trade merely to stop it out. Derived, and not meaningful where the stop's provenance is reconstructed rather than recorded.
 _Avoid_: Extension, late entry, overextended
 
 ### Enrichment
+
+**Trading Day**:
+A date on which a symbol actually traded. A date the exchange was open but on which the symbol was suspended is not one of its trading days, however the data source reports it. Every window the journal measures is counted in trading days, so a suspension stretches a window in calendar time rather than filling it with a day that did not happen.
+_Avoid_: Session, bar, calendar day, business day
+
+**Limit Locked**:
+A day on which a symbol traded at a single price because it moved as far as the exchange permits in one day, so an order at any other price could not have been filled. Noted against a Counterfactual's exit leg, where it means the simulated fill was unobtainable and any cost derived from it should not be read as real.
+_Avoid_: Halt (nothing trades at all then — see Trading Day), circuit breaker, auto rejection
 
 **Average Daily Range**:
 The share of its own price a symbol typically travels in a day, averaged over a recent window. The journal's unit of comparison: chart distances and excursions are expressed as multiples of it, so trades in either book at any price level can be read side by side.
@@ -121,6 +133,10 @@ _Avoid_: Import, review, approval
 **Frozen**:
 The state a Trade reaches 20 trading days after its final Exit, at which its hand-entered fields lock and its derived values are snapshotted.
 _Avoid_: Closed, archived, locked
+
+**Write-Off**:
+The end of a Trade whose holding can no longer be sold — delisted, suspended for good, or otherwise terminal. Recorded as an Exit like any other, at whatever the trader recovered, and it Freezes the Trade at once: there is no post-exit window to wait out when the symbol has no further Trading Days.
+_Avoid_: Delisting, abandonment, cancellation, total loss
 
 **Drift**:
 A disagreement between a frozen Trade's snapshotted derived values and what those values recompute to today. Surfaced for acknowledgement rather than silently applied.
