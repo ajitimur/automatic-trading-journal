@@ -26,3 +26,12 @@ node_modules/
 deploy/**/logs/
 __pycache__/
 *.pyc
+
+# Durability tiers (SPEC §13.5, #39). DB snapshots are *.db (ignored above); the
+# raw archive is PII-bearing (names, NPWP/NIK, account numbers) and stays local
+# or encrypted — it must never enter the repo. These are the default local
+# directory names; $JOURNAL_SNAPSHOTS_DIR / $JOURNAL_ARCHIVE_DIR / $JOURNAL_OFFSITE_DIR
+# point them at a durable, ideally encrypted, volume.
+snapshots/
+archive/
+offsite/

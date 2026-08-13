@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from . import books
+from . import backup, books
 
 
 @dataclass
@@ -38,6 +38,12 @@ class RunResult:
     started_at: str
     finished_at: str
     books: list[BookOutcome] = field(default_factory=list)
+    # The durability snapshot taken at the tail of a successful run (SPEC §13.5,
+    # #39). ``snapshot`` is the SnapshotResult when one was written; a
+    # best-effort failure records ``snapshot_error`` instead and never sinks the
+    # run (§13.6 — durability is a convenience over an already-committed run).
+    snapshot: Optional["backup.SnapshotResult"] = None
+    snapshot_error: Optional[str] = None
 
     @property
     def is_noop(self) -> bool:
@@ -136,7 +142,7 @@ def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
     )
     conn.commit()
 
-    return RunResult(
+    result = RunResult(
         run_id=run_id,
         as_of_date=as_of,
         status=status,
@@ -144,3 +150,27 @@ def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
         finished_at=finished_at,
         books=outcomes,
     )
+
+    # Durability tail (SPEC §13.5): every *successful* run leaves a timestamped
+    # VACUUM INTO snapshot under rolling retention, plus an off-machine copy when
+    # one is configured. A run whose books errored is recorded but not
+    # snapshotted — a failed pass has nothing new worth freezing off-site. The
+    # snapshot is best-effort: it happens after the run record is committed, so a
+    # durability failure is logged into the result, never raised.
+    if status != "error":
+        _snapshot_after_run(conn, result)
+
+    return result
+
+
+def _snapshot_after_run(conn, result: RunResult) -> None:
+    db_path = backup.db_path_of(conn)
+    try:
+        result.snapshot = backup.snapshot_database(
+            conn,
+            snapshots_dir=backup.snapshots_dir_for(db_path),
+            timestamp=backup.snapshot_timestamp(datetime.now(timezone.utc)),
+            offsite_dir=backup.offsite_dir(),
+        )
+    except Exception as exc:  # durability must not sink an already-committed run
+        result.snapshot_error = str(exc)

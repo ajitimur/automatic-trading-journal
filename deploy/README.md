@@ -15,6 +15,13 @@ scheduler on any host substitutes without touching the job.
    ```sh
    export JOURNAL_DB="$HOME/Library/Application Support/automatic-trading-journal/journal.db"
    export JOURNAL_SECRET_IBKR_FLEX_TOKEN="…"   # scoped, rotatable; expires 2027-07-14
+   # Durability (SPEC §13.5). Snapshots and the raw archive default beside the
+   # DB; point the off-machine copy at a durable, ideally encrypted, volume so
+   # at least one DB copy lands off this machine. The archive is PII-bearing —
+   # keep it local or encrypted, never a plain synced folder.
+   export JOURNAL_OFFSITE_DIR="/Volumes/encrypted-backup/atj/snapshots"
+   # export JOURNAL_SNAPSHOTS_DIR=…   # default: <db>/../snapshots
+   # export JOURNAL_ARCHIVE_DIR=…     # default: <db>/../archive
    ```
 
 2. Copy the plist template, substituting `__REPO__`, `__DATA__` and the token:

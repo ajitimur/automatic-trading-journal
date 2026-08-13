@@ -75,6 +75,15 @@ npm run job -- equity-idx --file month-end-series.csv
 # `estimated` snapshot still computes and flags but is excluded too.
 npm run job -- risk               # every book; --book US|IDX to limit
 
+# Durability (SPEC §13.5). Every successful `run` leaves a timestamped
+# `VACUUM INTO` snapshot under rolling retention, plus an off-machine copy when
+# $JOURNAL_OFFSITE_DIR is set (at least one copy off this machine). Raw source
+# documents (Flex XML, TC/SoA PDFs) are archived verbatim, kept forever, and —
+# being PII-bearing — never enter the repo. Rehearse the restore end to end:
+JOURNAL_OFFSITE_DIR=/Volumes/encrypted/atj npm run job -- run   # snapshot + off-site
+npm run job -- restore-check          # restore newest snapshot to scratch, verify it opens
+# See docs/durability-restore-rehearsal.md for the written-down rehearsal record.
+
 # The localhost UI — reads the same file, renders "no Trades yet" and the
 # latest run record. Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui

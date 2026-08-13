@@ -82,6 +82,38 @@ class RunTest(unittest.TestCase):
         self.assertTrue(result.is_noop)
         conn.close()
 
+    def test_successful_run_leaves_a_snapshot(self):
+        # Every successful run leaves a timestamped VACUUM INTO snapshot under
+        # rolling retention (SPEC §13.5, #39).
+        conn = db.connect(self.db_path)
+        result = execute_run(conn, as_of="2026-08-13")
+        conn.close()
+
+        self.assertIsNotNone(result.snapshot)
+        self.assertTrue(os.path.exists(result.snapshot.path))
+        snaps_dir = os.path.join(os.path.dirname(self.db_path), "snapshots")
+        files = [n for n in os.listdir(snaps_dir) if n.endswith(".db")]
+        self.assertEqual(len(files), 1)
+
+    def test_snapshot_failure_does_not_sink_the_run(self):
+        # The snapshot is best-effort: a run that advanced its books is still a
+        # success even if the durability copy could not be written (§13.6 —
+        # errors are data). Point the snapshots dir at a file to force failure.
+        clash = os.path.join(self.tmp.name, "not-a-dir")
+        with open(clash, "w") as fh:
+            fh.write("x")
+        os.environ["JOURNAL_SNAPSHOTS_DIR"] = clash
+        try:
+            conn = db.connect(self.db_path)
+            result = execute_run(conn, as_of="2026-08-13")
+            conn.close()
+        finally:
+            del os.environ["JOURNAL_SNAPSHOTS_DIR"]
+
+        self.assertEqual(result.status, "ok")
+        self.assertIsNone(result.snapshot)
+        self.assertIsNotNone(result.snapshot_error)
+
 
 if __name__ == "__main__":
     unittest.main()
