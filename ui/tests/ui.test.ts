@@ -54,6 +54,20 @@ function seedConfirmedTrade(dbPath: string): void {
   });
 }
 
+// The two hand-entered fields, set through the real CLI door (#28).
+function setStopAndSetup(dbPath: string, tradeId: number): void {
+  execFileSync('python3', ['-m', 'journal', 'stop', String(tradeId), '9', '--db', dbPath], {
+    cwd: JOB_DIR,
+    env: { ...process.env, PYTHONPATH: JOB_DIR },
+    stdio: 'pipe',
+  });
+  execFileSync(
+    'python3',
+    ['-m', 'journal', 'setup', String(tradeId), 'base_breakout', '--db', dbPath],
+    { cwd: JOB_DIR, env: { ...process.env, PYTHONPATH: JOB_DIR }, stdio: 'pipe' },
+  );
+}
+
 function withDb(fn: (dbPath: string) => Promise<void> | void) {
   return async () => {
     const dir = mkdtempSync(join(tmpdir(), 'journal-ui-'));
@@ -124,6 +138,28 @@ test(
     // The Fills are behind a disclosure, not on the surface.
     assert.match(html, /<details>[\s\S]*<summary>Fills<\/summary>/);
     assert.doesNotMatch(html, /No Trades yet\./);
+    // A Trade with neither stop nor setup renders — the hole shows as "—".
+    assert.equal(trade.stop, null);
+    assert.equal(trade.setup, null);
+  }),
+);
+
+test(
+  'a Trade with a stop and setup renders them with the derived provenance',
+  withDb(async (dbPath) => {
+    runJob(dbPath, '2026-08-13');
+    seedConfirmedTrade(dbPath);
+    setStopAndSetup(dbPath, readState(dbPath).trades[0]!.id);
+
+    const state = readState(dbPath);
+    const trade = state.trades[0]!;
+    assert.equal(trade.stop, 9);
+    assert.equal(trade.setup, 'base_breakout');
+    assert.equal(trade.stop_provenance, 'recorded'); // set before any Exit
+
+    const html = renderPage(state);
+    assert.match(html, /base_breakout/);
+    assert.match(html, /recorded/);
   }),
 );
 

@@ -34,6 +34,13 @@ npm run job -- fetch <activity-flex-query-id>
 npm run job -- confirm --dry-run
 npm run job -- confirm
 
+# Chase the two hand-entered fields (SPEC §3.2/§5.5) — the only typed values in
+# the system. Confirm demands neither; a Trade commits without them. The stop's
+# provenance (recorded | reconstructed) is derived from whether it arrived
+# before the Trade's first Exit, never typed. Both lock at freeze.
+npm run job -- stop  <trade-id> <price>
+npm run job -- setup <trade-id> base_breakout   # | high_tight_flag | other
+
 # The localhost UI — reads the same file, renders "no Trades yet" and the
 # latest run record. Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui

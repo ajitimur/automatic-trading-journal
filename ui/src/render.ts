@@ -47,6 +47,16 @@ function renderFills(fills: Fill[], fillCount: number): string {
     ${capped}`;
 }
 
+// The stop cell states its provenance and whether it is locked; a missing stop
+// reads as "—", the hole the daily job nags about (SPEC §5.5), not a blank.
+function renderStop(t: Trade): string {
+  if (t.stop === null) {
+    return t.frozen ? '<td>— <span class="muted">(no stop, frozen)</span></td>' : '<td>—</td>';
+  }
+  const prov = t.stop_provenance ? ` <span class="muted">(${escapeHtml(t.stop_provenance)})</span>` : '';
+  return `<td>${t.stop}${prov}</td>`;
+}
+
 // One Trade: the interpreted cohort up front, its Fills one disclosure away
 // (SPEC §5.9). The <details> is the disclosure — collapsed until opened.
 function renderTrade(t: Trade): string {
@@ -76,9 +86,11 @@ function renderTrade(t: Trade): string {
       <td>${t.entry_qty}</td>
       <td>${t.entry_avg_price.toFixed(4)}</td>
       <td>${notional.toFixed(2)}</td>
+      ${renderStop(t)}
+      <td>${t.setup ? escapeHtml(t.setup) : '—'}</td>
       <td>${escapeHtml(t.status)}</td>
     </tr>
-    <tr class="disclosure"><td colspan="7">
+    <tr class="disclosure"><td colspan="9">
       <details>
         <summary>Fills</summary>
         <table><thead><tr><th>Executed (ET)</th><th>Side</th><th>Qty</th><th>Price</th></tr></thead>
@@ -96,7 +108,7 @@ function renderTrades(trades: Trade[]): string {
   return `
     <p>${trades.length} confirmed Trade(s).</p>
     <table>
-      <thead><tr><th>Book</th><th>Symbol</th><th>Entry date</th><th>Qty</th><th>Avg price</th><th>Notional</th><th>Status</th></tr></thead>
+      <thead><tr><th>Book</th><th>Symbol</th><th>Entry date</th><th>Qty</th><th>Avg price</th><th>Notional</th><th>Stop</th><th>Setup</th><th>Status</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }
