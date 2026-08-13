@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS fill (
 -- so `entry_avg_price * entry_qty` is the cash that actually left the account.
 -- A different entry day is a *different* Trade, never an addition (ADR 0001);
 -- the (book, symbol, entry_date) uniqueness enforces that at the table.
+--
+-- `stop` and `setup` are the only two hand-entered fields in the system (SPEC
+-- §3.2, #28): both nullable because a Trade commits with neither (§5.5, the
+-- chaseable path). `stop_provenance` is *derived, never typed* — 'recorded' if
+-- the stop arrived before the Trade's first Exit, 'reconstructed' if after
+-- (ADR 0002). `frozen` locks the two hand-entered fields once the freeze fuse
+-- fires (§3.5); a stop supplied after freeze is refused, so a Trade frozen
+-- without one keeps no Risk % and no R, ever.
 CREATE TABLE IF NOT EXISTS trade (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     book            TEXT NOT NULL,
@@ -85,6 +93,10 @@ CREATE TABLE IF NOT EXISTS trade (
     entry_qty       REAL NOT NULL DEFAULT 0,
     entry_avg_price REAL NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'closed'
+    stop            REAL,                           -- hand-entered, NULL until supplied
+    setup           TEXT,                           -- hand-entered: base_breakout | high_tight_flag | other
+    stop_provenance TEXT,                           -- derived: 'recorded' | 'reconstructed'
+    frozen          INTEGER NOT NULL DEFAULT 0,     -- 1 once the freeze fuse locks the hand-entered fields
     UNIQUE (book, symbol, entry_date)
 );
 
@@ -238,6 +250,11 @@ _TRADE_COLUMNS = {
     "entry_qty": "REAL NOT NULL DEFAULT 0",
     "entry_avg_price": "REAL NOT NULL DEFAULT 0",
     "status": "TEXT NOT NULL DEFAULT 'open'",
+    # The two hand-entered fields and their derived companions (#28).
+    "stop": "REAL",
+    "setup": "TEXT",
+    "stop_provenance": "TEXT",
+    "frozen": "INTEGER NOT NULL DEFAULT 0",
 }
 
 

@@ -1,0 +1,138 @@
+"""The two hand-entered fields — chaseable stop, fixed setup, derived provenance.
+
+Covers SPEC §3.2/§3.5/§5.5 and ADR 0002, the acceptance criteria of #28:
+- a Trade commits with neither stop nor setup (the chaseable path);
+- `stop_provenance` derives from whether the stop arrived before the first Exit
+  and nothing about it is typed;
+- stop and setup are editable until freeze and locked after it;
+- a stop supplied after freeze is refused, leaving no Risk % and no R;
+- the setup vocabulary is fixed to the three values.
+"""
+
+import os
+import tempfile
+import unittest
+
+from journal import db, fills, flex, stops, trades
+
+
+def _buy(ref, symbol, qty, price, when, book="US"):
+    return flex.Fill(
+        source="ibkr", source_ref=ref, revision=1, book=book,
+        symbol=symbol, side="BUY", quantity=float(qty), price=float(price),
+        commission=0.0, executed_at=when, order_id="o1",
+    )
+
+
+def _sell(ref, symbol, qty, price, when, book="US"):
+    return flex.Fill(
+        source="ibkr", source_ref=ref, revision=1, book=book,
+        symbol=symbol, side="SELL", quantity=-float(qty), price=float(price),
+        commission=0.0, executed_at=when, order_id="o2",
+    )
+
+
+class StopsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _open_trade(self, ref="b1", symbol="AAA", when="2026-08-03T09:30:00-04:00"):
+        fills.insert_fills(self.conn, [_buy(ref, symbol, 100, 10.0, when)])
+        trades.confirm(self.conn)
+        return self.conn.execute(
+            "SELECT id FROM trade WHERE symbol = ?", (symbol,)
+        ).fetchone()["id"]
+
+    def _close_trade(self, trade_id, ref="s1", symbol="AAA",
+                     when="2026-08-07T10:00:00-04:00"):
+        fills.insert_fills(self.conn, [_sell(ref, symbol, 100, 25.0, when)])
+        trades.confirm(self.conn)
+
+    # ── Acceptance: a Trade commits with neither stop nor setup ──
+    def test_commits_with_neither_stop_nor_setup(self):
+        trade_id = self._open_trade()
+        a = stops.annotations(self.conn, trade_id)
+        self.assertIsNone(a["stop"])
+        self.assertIsNone(a["setup"])
+        self.assertIsNone(a["stop_provenance"])
+        self.assertEqual(a["frozen"], 0)  # not frozen; Exposure % needs no stop
+
+    # ── Acceptance: provenance is 'recorded' when the stop precedes any Exit ──
+    def test_stop_before_first_exit_is_recorded(self):
+        trade_id = self._open_trade()
+        self.assertEqual(stops.set_stop(self.conn, trade_id, 9.0), stops.RECORDED)
+        self.assertEqual(
+            stops.annotations(self.conn, trade_id)["stop_provenance"], "recorded"
+        )
+        # A later Exit does not retroactively contaminate a stop already recorded.
+        self._close_trade(trade_id)
+        self.assertEqual(
+            stops.annotations(self.conn, trade_id)["stop_provenance"], "recorded"
+        )
+
+    # ── Acceptance: provenance is 'reconstructed' when the stop follows an Exit ──
+    def test_stop_after_first_exit_is_reconstructed(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0), stops.RECONSTRUCTED
+        )
+        self.assertEqual(
+            stops.annotations(self.conn, trade_id)["stop_provenance"], "reconstructed"
+        )
+
+    # ── Acceptance: stop and setup are editable until freeze ──
+    def test_stop_and_setup_editable_until_freeze(self):
+        trade_id = self._open_trade()
+        stops.set_stop(self.conn, trade_id, 9.0)
+        stops.set_stop(self.conn, trade_id, 9.5)  # chase it up — still open
+        stops.set_setup(self.conn, trade_id, "base_breakout")
+        stops.set_setup(self.conn, trade_id, "high_tight_flag")
+        a = stops.annotations(self.conn, trade_id)
+        self.assertEqual(a["stop"], 9.5)
+        self.assertEqual(a["setup"], "high_tight_flag")
+
+    # ── Acceptance: a stop supplied after freeze is refused, leaving no stop ──
+    def test_stop_after_freeze_is_refused(self):
+        trade_id = self._open_trade()
+        stops.freeze(self.conn, trade_id)
+        with self.assertRaises(stops.FrozenError):
+            stops.set_stop(self.conn, trade_id, 9.0)
+        a = stops.annotations(self.conn, trade_id)
+        self.assertIsNone(a["stop"])          # the hole stays — no Risk %, no R
+        self.assertIsNone(a["stop_provenance"])
+
+    def test_setup_after_freeze_is_refused(self):
+        trade_id = self._open_trade()
+        stops.set_setup(self.conn, trade_id, "other")
+        stops.freeze(self.conn, trade_id)
+        with self.assertRaises(stops.FrozenError):
+            stops.set_setup(self.conn, trade_id, "base_breakout")
+        self.assertEqual(stops.annotations(self.conn, trade_id)["setup"], "other")
+
+    # ── Acceptance: the setup vocabulary is fixed to the three values ──
+    def test_setup_vocabulary_is_fixed(self):
+        trade_id = self._open_trade()
+        self.assertEqual(
+            stops.SETUP_VOCABULARY, ("base_breakout", "high_tight_flag", "other")
+        )
+        for value in stops.SETUP_VOCABULARY:
+            stops.set_setup(self.conn, trade_id, value)
+        with self.assertRaises(stops.UnknownSetup):
+            stops.set_setup(self.conn, trade_id, "cup_and_handle")
+
+    # ── An unknown Trade id is a bug surfaced, not a silent no-op ──
+    def test_unknown_trade_is_refused(self):
+        with self.assertRaises(stops.UnknownTrade):
+            stops.set_stop(self.conn, 999, 9.0)
+        with self.assertRaises(stops.UnknownTrade):
+            stops.freeze(self.conn, 999)
+
+
+if __name__ == "__main__":
+    unittest.main()

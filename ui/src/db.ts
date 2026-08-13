@@ -57,6 +57,13 @@ export interface Trade {
   entry_qty: number;
   entry_avg_price: number;
   status: string;
+  // The two hand-entered fields, null until supplied (SPEC §3.2, #28). A Trade
+  // renders with neither. `stop_provenance` is derived from when the stop
+  // arrived, never typed; `frozen` locks both once the freeze fuse fires.
+  stop: number | null;
+  setup: string | null;
+  stop_provenance: string | null;
+  frozen: number;
   entryFills: Fill[];
   exits: ExitAllocation[];
 }

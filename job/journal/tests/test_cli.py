@@ -11,7 +11,7 @@ import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 
-from journal import cli, db, fills, flex, flex_client
+from journal import cli, db, fills, flex, flex_client, stops
 from journal.cli import main
 
 SAMPLES = os.path.join(
@@ -104,6 +104,50 @@ class CliTest(unittest.TestCase):
         conn = db.connect(self.db_path)
         self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 1)
         conn.close()
+
+    def _trade_id(self):
+        conn = db.connect(self.db_path)
+        tid = conn.execute("SELECT id FROM trade").fetchone()["id"]
+        conn.close()
+        return tid
+
+    def test_stop_and_setup_commands_set_the_hand_entered_fields(self):
+        self._seed_buy()
+        self._confirm()
+        tid = self._trade_id()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["stop", str(tid), "9.0", "--db", self.db_path])
+        self.assertEqual(code, 0)
+        self.assertIn("provenance: recorded", buf.getvalue())  # no Exit yet
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["setup", str(tid), "base_breakout", "--db", self.db_path])
+        self.assertEqual(code, 0)
+
+        conn = db.connect(self.db_path)
+        row = conn.execute(
+            "SELECT stop, setup, stop_provenance FROM trade WHERE id = ?", (tid,)
+        ).fetchone()
+        conn.close()
+        self.assertEqual((row["stop"], row["setup"], row["stop_provenance"]),
+                         (9.0, "base_breakout", "recorded"))
+
+    def test_stop_after_freeze_exits_nonzero(self):
+        self._seed_buy()
+        self._confirm()
+        tid = self._trade_id()
+        conn = db.connect(self.db_path)
+        stops.freeze(conn, tid)
+        conn.close()
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = main(["stop", str(tid), "9.0", "--db", self.db_path])
+        self.assertEqual(code, 1)
+        self.assertIn("frozen", err.getvalue())
 
     def _fetch(self, client):
         # The real DoH/HTTP client is replaced with a fake — the wire is not

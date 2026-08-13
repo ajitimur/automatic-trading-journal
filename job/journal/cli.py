@@ -10,7 +10,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
-from . import db, fills, flex, flex_client, secrets, trades
+from . import db, fills, flex, flex_client, secrets, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -101,6 +101,37 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stop(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        provenance = stops.set_stop(conn, args.trade_id, args.price)
+    except (stops.UnknownTrade, stops.FrozenError) as exc:
+        # Setting a stop is an explicit operator action: a missing Trade or a
+        # frozen one is a refusal to surface, not something to swallow.
+        print(f"stop refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    # Provenance is not typed — it falls out of when the stop arrived (SPEC §3.2).
+    print(f"stop {args.price:g} set on Trade {args.trade_id}  (provenance: {provenance})")
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        stops.set_setup(conn, args.trade_id, args.value)
+    except (stops.UnknownTrade, stops.FrozenError, stops.UnknownSetup) as exc:
+        print(f"setup refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"setup {args.value} set on Trade {args.trade_id}")
+    return 0
+
+
 def _build_flex_client(warn):
     # A seam: the real DoH resolver + HTTP transport are assembled here, and
     # tests substitute a fake so the wire is never touched.
@@ -182,6 +213,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(confirm_p)
     confirm_p.set_defaults(func=cmd_confirm)
+
+    stop_p = sub.add_parser(
+        "stop",
+        help="record or chase a Trade's stop (provenance derives from when it arrives)",
+    )
+    stop_p.add_argument("trade_id", type=int, help="the Trade id to set the stop on")
+    stop_p.add_argument("price", type=float, help="the stop price")
+    _add_db_argument(stop_p)
+    stop_p.set_defaults(func=cmd_stop)
+
+    setup_p = sub.add_parser(
+        "setup",
+        help="set a Trade's setup (base_breakout | high_tight_flag | other)",
+    )
+    setup_p.add_argument("trade_id", type=int, help="the Trade id to set the setup on")
+    setup_p.add_argument(
+        "value", choices=stops.SETUP_VOCABULARY, help="the setup name"
+    )
+    _add_db_argument(setup_p)
+    setup_p.set_defaults(func=cmd_setup)
 
     fetch_p = sub.add_parser(
         "fetch",
