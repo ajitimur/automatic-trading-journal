@@ -1,0 +1,132 @@
+Stockbit Statement of Account — EQUITY-BEARING SECTIONS, STRUCTURE ONLY
+=======================================================================
+
+Extracted with `pdftotext -layout` from the same real monthly SoA (July 2026)
+already characterised in `stockbit-soa-structure.txt`. That file covers page 1's
+cash ledger. This file covers what issue #19 went looking for: the header
+summary box and the PORTFOLIO STATEMENT.
+
+EVERY MONETARY FIGURE IS SCRUBBED. This repository is public and these are real
+account balances. Quantities and prices are scrubbed too — unlike the ledger
+extract, here they multiply straight back into a portfolio value. Symbols are
+replaced with SYM1..SYM6. Only the LAYOUT and the ARITHMETIC IDENTITIES are
+real, and the identities were verified to the rupiah against the raw document.
+
+
+1. HEADER SUMMARY BOX (page 1, upper right)
+-------------------------------------------
+
+Verbatim labels, in document order. This box is the find: it carries a single
+printed account-equity figure, so nothing has to be reconstructed.
+
+    Bank / Currency        <BANK> <ACCT-NO> / IDR
+    SID                    <SID>
+
+    Date                   01/07/2026 - 31/07/2026
+    Client                 <ACCT-NO> <CLIENT NAME>
+    Address                <ADDRESS>
+    Email                  <EMAIL>
+    Phone                  <PHONE>
+    Sales / Sub Branch     <BRANCH>
+
+                                        Cash Investor      <AMT>   (2 decimals)
+                                        Cash               <AMT>
+                                        Undue Trading      <AMT>
+                                        Short Sell         0
+                                        Portfolio          <AMT>
+                                        Portfolio Caping   0
+                                        Equity NAB         <AMT>
+                                        Avail Limit        <AMT>
+
+Note the statement is CO-BRANDED across two entities in the letterhead:
+
+    PT. STOCKBIT SEKURITAS DIGITAL       PT. BIBIT TUMBUH BERSAMA
+
+Same address, different phone. Bibit is the mutual-fund sibling. This matters
+for reading "Cash Investor" — see the identities below.
+
+
+2. PORTFOLIO STATEMENT (last page, after the ledger)
+-----------------------------------------------------
+
+Column header, verbatim (it spans two physical header lines, with `PRICE`
+straddling Buying/Close and `UNREAL. GAIN/LOSS` straddling the last two):
+
+                                                    PRICE                                       UNREAL. GAIN/LOSS
+    Stocks        Special Notes  Margin  Quantity   Buying   Close   Buying Value  Market Value  (Rp.)      %
+
+Representative rows (all figures scrubbed):
+
+    SYM1  <Company Name Tbk.>                <QTY>  <PRICE>  <PRICE>  <AMT>  <AMT>  <AMT>   <PCT>
+    SYM2  <Company Name                      <QTY>  <PRICE>  <PRICE>  <AMT>  <AMT>  <AMT>   <PCT>
+          Tbk.>
+    ...
+                                             TOTAL                          <AMT>  <AMT>  <AMT>
+
+Layout facts a parser must survive:
+
+  - The `Stocks ... %` header line REPEATS partway down the table. It is not a
+    page break in the text layer — `pdftotext -layout` emits it mid-run. Do not
+    treat a header line as a table terminator.
+  - Long company names WRAP onto a second line carrying no figures. A row is
+    identified by its leading ticker, not by line count.
+  - `Special Notes` and `Margin` were EMPTY on every row in this sample, so
+    their column positions are unconfirmed. A name carrying an IDX special
+    notation (the A/B/D/E/F/G/I/L/M/N/S/X/Y legend is printed below the table)
+    would populate `Special Notes` and could shift the layout.
+  - The section sits after the ledger, on the last page. Page count varies with
+    the month's activity, so FIND THE `PORTFOLIO STATEMENT` HEADING — never
+    index a fixed page.
+
+
+3. IDENTITIES — verified exactly, to the rupiah
+------------------------------------------------
+
+These are what make the document self-checking, in the same way the daily Trade
+Confirmation's fee model does (see export-findings.md).
+
+  (a) per row:   Market Value = Quantity x Close
+                 Verified on all 6 holdings, exact, no rounding slack.
+
+  (b) column:    sum(Market Value over rows) = printed TOTAL Market Value
+                 Verified exact.
+
+  (c) box:       Portfolio  = TOTAL Market Value from the table
+                 Verified exact.
+
+  (d) equity:    Equity NAB = Portfolio + <ledger closing Ending Balance>
+                 Verified exact.
+
+  (e) cash:      Cash       = Cash Investor + <ledger closing Ending Balance>
+                 Avail Limit = Cash
+                 Verified to WITHIN ONE RUPIAH, not exact. `Cash Investor` is
+                 the only figure in the box printed with 2 decimals; the ledger
+                 balance is printed rounded, so the sum lands under a rupiah
+                 away from the printed `Cash`. Identity (d) IS exact as
+                 printed. Do not build a hard equality assertion on (e).
+
+The consequence of (d) and (e) together is the important one, and it is a
+DECISION, not a fact — see docs/samples/equity-sources-findings.md:
+
+    Equity NAB counts the unsettled trading balance but NOT `Cash Investor`.
+    So `Equity NAB` and `Portfolio + Cash` are two DIFFERENT printed candidate
+    denominators, and on this sample they differ by about a fifth of the
+    larger. Which one is "account equity" for risk % is issue #16's call.
+
+The ledger's closing Ending Balance is printed in parentheses. Parentheses are
+the broker's sign convention for a balance owed TO the client: on this sample
+`Cr - Db` equals the parenthesised figure exactly, and it enters (d) and (e)
+POSITIVE. Do not read the parentheses as a negative client balance.
+
+
+4. DIVIDENDS APPEAR IN THE LEDGER
+----------------------------------
+
+Not what #19 asked, but it corrects a premise carried in #17. The cash ledger
+carries dividend rows, as a matched pair (accrual then payment):
+
+    31/07/2026  31/07/2026  D <REF> Dividend SYM <QTY> @ <RATE> - Tax 0%   ...
+    31/07/2026  31/07/2026  P <REF> Dividend SYM <QTY> @ <RATE> - Tax 0%   ...
+
+Share count, per-share rate and the withholding rate are all printed. So IDX
+dividend cash IS reachable — in the MONTHLY SoA, not the daily TC.
