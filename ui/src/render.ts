@@ -2,7 +2,7 @@
 // shows two things: "no Trades yet" and the latest run record. Kept as a pure
 // function so it is testable without a live server.
 
-import type { JournalState, RunRecord } from './db.ts';
+import type { BookOutcome, JournalState, RunRecord } from './db.ts';
 
 function escapeHtml(value: string): string {
   return value
@@ -12,19 +12,24 @@ function escapeHtml(value: string): string {
     .replace(/"/g, '&quot;');
 }
 
+// The human-readable "Dates advanced" cell, one per book status.
+function describeOutcome(b: BookOutcome): string {
+  if (b.status === 'advanced') {
+    return `${b.days_advanced} day(s): ${escapeHtml(b.from_date ?? 'floor')} → ${escapeHtml(b.to_date)}`;
+  }
+  if (b.status === 'no-op') {
+    return `no-op (at ${escapeHtml(b.to_date)})`;
+  }
+  return `error: ${escapeHtml(b.error ?? 'unknown')}`;
+}
+
 function renderRun(run: RunRecord | null): string {
   if (run === null) {
     return `<p class="muted">No run yet — start the job with <code>journal run</code>.</p>`;
   }
   const rows = run.books
     .map((b) => {
-      const advanced =
-        b.status === 'advanced'
-          ? `${b.days_advanced} day(s): ${escapeHtml(b.from_date ?? 'floor')} → ${escapeHtml(b.to_date)}`
-          : b.status === 'no-op'
-            ? `no-op (at ${escapeHtml(b.to_date)})`
-            : `error: ${escapeHtml(b.error ?? 'unknown')}`;
-      return `<tr><td>${escapeHtml(b.book)}</td><td>${escapeHtml(b.status)}</td><td>${advanced}</td></tr>`;
+      return `<tr><td>${escapeHtml(b.book)}</td><td>${escapeHtml(b.status)}</td><td>${describeOutcome(b)}</td></tr>`;
     })
     .join('');
   return `
