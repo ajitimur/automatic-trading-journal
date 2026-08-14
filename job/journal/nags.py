@@ -47,8 +47,7 @@ def _missing_field(conn, book: str, column: str, kind: str) -> List[Nag]:
     ).fetchone()["c"]
     if count == 0:
         return []
-    noun = "stop" if column == "stop" else "setup"
-    return [Nag(book, kind, f"{book}: {count} Trade(s) without a {noun}")]
+    return [Nag(book, kind, f"{book}: {count} Trade(s) without a {column}")]
 
 
 def _idx_equity(conn) -> List[Nag]:

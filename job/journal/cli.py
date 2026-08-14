@@ -47,11 +47,11 @@ def _format_summary(result: RunResult, db_path: str) -> str:
         else:
             detail = f"error: {book.error}"
         lines.append(f"  {book.book:<3} {detail}")
-        for p in [p for p in result.passes if p.book == book.book]:
-            if p.status == "gated":
-                lines.append(f"      {p.name}: gated — {p.detail}")
-            elif p.status == "error":
-                lines.append(f"      {p.name}: error — {p.detail}")
+        for p in result.passes:
+            if p.book != book.book:
+                continue
+            if p.status in ("gated", "error"):
+                lines.append(f"      {p.name}: {p.status} — {p.detail}")
             else:
                 lines.append(f"      {p.name}: {p.detail}")
     # The nags, as stated facts (SPEC §11.4): read off the banner, never alarms.

@@ -117,7 +117,7 @@ def _pass_regime(conn, book: str, as_of: str) -> str:
     regime for each of them, not just today. The earliest bar has no prior close
     to stamp from and is skipped.
     """
-    bars = _benchmark_bars(conn, book, books.BENCHMARKS[book])
+    bars = _benchmark_bars(conn, book)
     store = regime.RegimeStore(conn)
     stamped = 0
     for b in bars:
@@ -164,13 +164,13 @@ _PASSES = (
 )
 
 
-def _benchmark_bars(conn, book: str, symbol: str):
+def _benchmark_bars(conn, book: str):
     from .bars import Bar
 
     rows = conn.execute(
         "SELECT date, open, high, low, close, volume, dividend FROM bar "
         "WHERE book = ? AND symbol = ? ORDER BY date",
-        (book, symbol),
+        (book, books.BENCHMARKS[book]),
     ).fetchall()
     return [
         Bar(date=r["date"], open=r["open"], high=r["high"], low=r["low"],
