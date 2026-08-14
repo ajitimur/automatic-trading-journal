@@ -40,12 +40,11 @@ normalized cross-book read stays legal, but this door does one book at a time.
 
 from __future__ import annotations
 
-import io
 import json
 import sqlite3
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from . import book_history, books
+from . import book_history
 from .counterfactual import RESOLVED, CounterfactualStore, realized_r as cf_realized_r
 from .enrichment import EnrichmentStore
 from .exit_enrichment import ExcursionStore, ExitGeometryStore
