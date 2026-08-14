@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -97,6 +97,8 @@ CREATE TABLE IF NOT EXISTS trade (
     setup           TEXT,                           -- hand-entered: base_breakout | high_tight_flag | other
     stop_provenance TEXT,                           -- derived: 'recorded' | 'reconstructed'
     frozen          INTEGER NOT NULL DEFAULT 0,     -- 1 once the freeze fuse locks the hand-entered fields
+    reviewed_at     TEXT,                           -- review-surface stamp (#40), NULL until *Reviewed →*
+    note            TEXT,                           -- review-surface free-text note (#40), not freeze-locked
     UNIQUE (book, symbol, entry_date)
 );
 
@@ -504,6 +506,10 @@ _TRADE_COLUMNS = {
     "setup": "TEXT",
     "stop_provenance": "TEXT",
     "frozen": "INTEGER NOT NULL DEFAULT 0",
+    # The review-surface state (#40): a review stamp and a free-text note. Same
+    # non-destructive ALTER; neither is locked by freeze (SPEC §11.3).
+    "reviewed_at": "TEXT",
+    "note": "TEXT",
 }
 
 
