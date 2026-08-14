@@ -462,8 +462,10 @@ function countFor(book: string, ts: ReviewTrade[]): BookCount {
     book,
     closed: ts.length,
     chased: { k: gradeable.filter((t) => t.chased).length, of: gradeable.length, na: ts.length - gradeable.length },
+    // 'in_band' carries a *null* timing delta (only early/late carry a number),
+    // so the in-band count keys off the state, not the delta (SPEC §10.7).
     partial_in_band: {
-      k: band.filter((t) => t.adherence!.partial_timing_delta === 0 && t.adherence!.partial_state === 'in_band').length,
+      k: band.filter((t) => t.adherence!.partial_state === 'in_band').length,
       of: band.length,
       na: ts.length - band.length,
     },

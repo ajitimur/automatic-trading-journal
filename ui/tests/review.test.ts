@@ -58,7 +58,7 @@ function tradeFixture(over: Partial<ReviewTrade> = {}): ReviewTrade {
     chased: true, stop_distance_adr: 1.66,
     adherence: {
       nominal_variant: 'ma10/day3', best_fit: 'ma10/day3', partial_state: 'in_band',
-      partial_timing_delta: 0, trail_exit_delta: 0, nominal_status: 'resolved',
+      partial_timing_delta: null, trail_exit_delta: 0, nominal_status: 'resolved',
       exit_path: 'trail', deviation_cost_r: 0,
       nominal_legs: [
         { date: '2026-08-04', day: 3, trigger: 'partial', limit_locked: false },
