@@ -644,7 +644,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     risk_p = sub.add_parser(
         "risk",
-        help="report Risk % and Exposure % per book with the staleness bound and counts",
+        # argparse expands help through %-formatting, so a literal percent is doubled.
+        help="report Risk %% and Exposure %% per book with the staleness bound and counts",
     )
     risk_p.add_argument(
         "--book", choices=books.BOOKS, default=None,
