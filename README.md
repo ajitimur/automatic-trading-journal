@@ -10,7 +10,13 @@ Two independent entry points over one SQLite file ([SPEC §13.6](SPEC.md#136-obs
 
 ```sh
 # The daily job — a plain idempotent CLI. Creates the file, writes a run
-# record, advances each book. Running it twice is a visible no-op.
+# record, advances each book from its cursor to the present (backfill is
+# first-class, so a missed day is caught up, not an error — SPEC §13.1). Per
+# book it runs the enrichment passes — regime, counterfactual, freeze — each
+# gating on whether that book's prior trading day has actually closed (§13.3),
+# and carries the nags (missing stop/setup, IDX equity, IDX intake — §11.4) as
+# stated facts. It enriches but never commits a Trade. Running it twice is a
+# visible no-op.
 npm run job -- run                 # or: job/bin/journal run
 
 # Import an IBKR Flex XML file into the append-only Fill ledger. One Fill per

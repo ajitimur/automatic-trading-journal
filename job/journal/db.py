@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
@@ -47,6 +47,30 @@ CREATE TABLE IF NOT EXISTS run_book (
     days_advanced INTEGER NOT NULL,
     error         TEXT,
     PRIMARY KEY (run_id, book)
+);
+
+-- One row per (run, book, enrichment pass). The job enriches but never commits
+-- (SPEC §13.1): these record what each book-scoped pass did, and whether it ran
+-- at all. A pass `gated` when the book's prior trading day had not actually
+-- closed (§13.3) — the enrichment waits rather than trusting the clock.
+CREATE TABLE IF NOT EXISTS run_pass (
+    run_id INTEGER NOT NULL REFERENCES run(id),
+    book   TEXT NOT NULL,
+    name   TEXT NOT NULL,           -- 'regime' | 'counterfactual' | 'freeze'
+    status TEXT NOT NULL,           -- 'ran' | 'gated' | 'error'
+    detail TEXT,                    -- counts stamped/scored/frozen, or why gated
+    PRIMARY KEY (run_id, book, name)
+);
+
+-- Stated facts a run surfaces as nags (SPEC §11.4): missing stop, missing setup,
+-- missing IDX equity, last IDX drop. Facts, never alarms — the banner reads them
+-- on next open (§13.6). One row per (run, book, kind).
+CREATE TABLE IF NOT EXISTS run_nag (
+    run_id INTEGER NOT NULL REFERENCES run(id),
+    book   TEXT NOT NULL,
+    kind   TEXT NOT NULL,           -- 'missing_stop' | 'missing_setup' | 'idx_equity' | 'idx_intake'
+    detail TEXT NOT NULL,           -- the stated fact
+    PRIMARY KEY (run_id, book, kind)
 );
 
 -- Append-only source of truth (SPEC §3.1, ADR 0003). The IBKR Flex parser
