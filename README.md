@@ -10,7 +10,13 @@ Two independent entry points over one SQLite file ([SPEC §13.6](SPEC.md#136-obs
 
 ```sh
 # The daily job — a plain idempotent CLI. Creates the file, writes a run
-# record, advances each book. Running it twice is a visible no-op.
+# record, advances each book from its cursor to the present (backfill is
+# first-class, so a missed day is caught up, not an error — SPEC §13.1). Per
+# book it runs the enrichment passes — regime, counterfactual, freeze — each
+# gating on whether that book's prior trading day has actually closed (§13.3),
+# and carries the nags (missing stop/setup, IDX equity, IDX intake — §11.4) as
+# stated facts. It enriches but never commits a Trade. Running it twice is a
+# visible no-op.
 npm run job -- run                 # or: job/bin/journal run
 
 # Import an IBKR Flex XML file into the append-only Fill ledger. One Fill per
@@ -90,6 +96,18 @@ npm run job -- risk               # every book; --book US|IDX to limit
 # as unknown.
 npm run job -- counterfactual     # every book; --book US|IDX to limit
 
+# The LLM export (SPEC §12) — curated JSONL, one object per Trade, normalized to
+# R and ADR so the two books read in one file, with a legend that always ships
+# and an aggregates header carrying `n` on every figure. One book per export
+# (§12.4): a two-book export would put two incomparable drawdown curves in one
+# column. Exactly two price levels ship (entry_avg_price, stop) — the equity level
+# never does; the six-variant table collapses to five curated fields; five
+# within-export percentiles rank each field they follow; `seq` and
+# `book_drawdown_r_at_entry` are absolute over the book's whole history, so a
+# sliced export keeps its `seq` gaps uncompacted. Redirect stdout or pass --out.
+npm run job -- export --book US            # to stdout; --from/--to slice by entry date
+npm run job -- export --book IDX --out idx.jsonl
+
 # Durability (SPEC §13.5). Every successful `run` leaves a timestamped
 # `VACUUM INTO` snapshot under rolling retention, plus an off-machine copy when
 # $JOURNAL_OFFSITE_DIR is set (at least one copy off this machine). Raw source
@@ -99,8 +117,12 @@ JOURNAL_OFFSITE_DIR=/Volumes/encrypted/atj npm run job -- run   # snapshot + off
 npm run job -- restore-check          # restore newest snapshot to scratch, verify it opens
 # See docs/durability-restore-rehearsal.md for the written-down rehearsal record.
 
-# The localhost UI — reads the same file, renders "no Trades yet" and the
-# latest run record. Ctrl-C to exit.
+# The localhost UI — `/` is the weekly review surface (SPEC §11): a per-Trade
+# exit workbench with the attention banner, a by-book strip of counts (never
+# rates), the strict week plus unreviewed stragglers plus open Trades, and
+# actions that write straight through the CLI door (add stop/setup, add IDX
+# equity, override exit reason, edit note, mark reviewed). `/raw` keeps the
+# diagnostic skeleton (Trades/Fills/latest run). Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui
 
 npm run typecheck && npm test      # TypeScript UI + Python job

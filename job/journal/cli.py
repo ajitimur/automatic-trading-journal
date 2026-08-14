@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import backup, books, counterfactual, db, equity, fills, flex, flex_client, risk, secrets, stockbit, stops, trades
+from . import backup, books, counterfactual, db, equity, export, fills, flex, flex_client, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -47,6 +47,16 @@ def _format_summary(result: RunResult, db_path: str) -> str:
         else:
             detail = f"error: {book.error}"
         lines.append(f"  {book.book:<3} {detail}")
+        for p in result.passes:
+            if p.book != book.book:
+                continue
+            if p.status in ("gated", "error"):
+                lines.append(f"      {p.name}: {p.status} — {p.detail}")
+            else:
+                lines.append(f"      {p.name}: {p.detail}")
+    # The nags, as stated facts (SPEC §11.4): read off the banner, never alarms.
+    for n in result.nags:
+        lines.append(f"  ! {n.detail}")
     if result.snapshot is not None:
         off = f" (+ off-site {result.snapshot.offsite_path})" if result.snapshot.offsite_path else ""
         lines.append(f"snapshot: {result.snapshot.path}{off}")
@@ -234,6 +244,48 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        review.mark_reviewed(conn, args.trade_id, at=_now_iso())
+    except review.UnknownTrade as exc:
+        print(f"review refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"Trade {args.trade_id} marked reviewed")
+    return 0
+
+
+def cmd_note(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        review.set_note(conn, args.trade_id, args.text)
+    except review.UnknownTrade as exc:
+        print(f"note refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"note set on Trade {args.trade_id}")
+    return 0
+
+
+def cmd_exit_reason(args: argparse.Namespace) -> int:
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        review.override_exit_reason(conn, args.exit_id, args.reason)
+    except (review.UnknownExit, review.UnknownReason) as exc:
+        print(f"exit-reason refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"Exit {args.exit_id} reason set to {args.reason}")
+    return 0
+
+
 def _build_flex_client(warn):
     # A seam: the real DoH resolver + HTTP transport are assembled here, and
     # tests substitute a fake so the wire is never touched.
@@ -280,6 +332,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 def _today_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def cmd_import_nav(args: argparse.Namespace) -> int:
@@ -416,6 +472,31 @@ def cmd_risk(args: argparse.Namespace) -> int:
             )
     finally:
         conn.close()
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Write the curated LLM export for one book (SPEC §12): legend, aggregates,
+    then one JSON object per Trade normalized to R and ADR.
+
+    One book per export (§12.4) — a two-book export would put two incomparable
+    drawdown curves in one column. The output goes to ``--out`` or stdout so it
+    pipes straight into whatever consumes it.
+    """
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        text = export.export(
+            conn, book=args.book, date_from=args.date_from, date_to=args.date_to
+        )
+    finally:
+        conn.close()
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"Wrote {args.book} export to {args.out}")
+    else:
+        sys.stdout.write(text)
     return 0
 
 
@@ -587,6 +668,31 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_argument(setup_p)
     setup_p.set_defaults(func=cmd_setup)
 
+    review_p = sub.add_parser(
+        "review",
+        help="mark a Trade reviewed on the weekly surface (drains the stragglers)",
+    )
+    review_p.add_argument("trade_id", type=int, help="the Trade id to mark reviewed")
+    _add_db_argument(review_p)
+    review_p.set_defaults(func=cmd_review)
+
+    note_p = sub.add_parser("note", help="set a Trade's free-text review note")
+    note_p.add_argument("trade_id", type=int, help="the Trade id to annotate")
+    note_p.add_argument("text", help="the note text")
+    _add_db_argument(note_p)
+    note_p.set_defaults(func=cmd_note)
+
+    exit_reason_p = sub.add_parser(
+        "exit-reason",
+        help="override an Exit's reason the confirm queue accepted unread (SPEC 5.8)",
+    )
+    exit_reason_p.add_argument("exit_id", type=int, help="the trade_exit id to re-reason")
+    exit_reason_p.add_argument(
+        "reason", choices=trades.EXIT_REASONS, help="the corrected exit reason"
+    )
+    _add_db_argument(exit_reason_p)
+    exit_reason_p.set_defaults(func=cmd_exit_reason)
+
     fetch_p = sub.add_parser(
         "fetch",
         help="fetch the IBKR Activity Flex Query over the wire into the ledger",
@@ -664,6 +770,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(cf_p)
     cf_p.set_defaults(func=cmd_counterfactual)
+
+    export_p = sub.add_parser(
+        "export",
+        help="write the curated LLM export (JSONL, legend + aggregates) for one book",
+    )
+    export_p.add_argument(
+        "--book", choices=books.BOOKS, required=True,
+        help="the one book to export — one book per export (never aggregated across)",
+    )
+    export_p.add_argument(
+        "--from", dest="date_from", default=None,
+        help="earliest entry date to include (ISO); seq gaps below it stay uncompacted",
+    )
+    export_p.add_argument(
+        "--to", dest="date_to", default=None,
+        help="latest entry date to include (ISO)",
+    )
+    export_p.add_argument(
+        "--out", default=None, help="write to this file instead of stdout",
+    )
+    _add_db_argument(export_p)
+    export_p.set_defaults(func=cmd_export)
 
     restore_p = sub.add_parser(
         "restore-check",
