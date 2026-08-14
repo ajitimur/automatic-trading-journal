@@ -158,7 +158,7 @@ function inR(px: number | null, entry: number, stop: number | null): number | nu
 function reviewWeek(iso: string): { from: string; to: string } {
   const d = new Date(iso + 'T00:00:00Z');
   // getUTCDay: 0=Sun..6=Sat. Step back to Friday (5).
-  let back = (d.getUTCDay() - 5 + 7) % 7;
+  const back = (d.getUTCDay() - 5 + 7) % 7;
   const fri = new Date(d.getTime() - back * 86400000);
   const mon = new Date(fri.getTime() - 4 * 86400000);
   return { from: mon.toISOString().slice(0, 10), to: fri.toISOString().slice(0, 10) };

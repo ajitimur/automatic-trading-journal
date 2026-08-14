@@ -48,6 +48,13 @@ function px(book: string, v: number | null): string {
 function day(iso: string | null): string {
   return iso ? iso.slice(5).replace('-', '/') : '—';
 }
+// Realized outcome label: R off the recorded stop, the % fallback when there is
+// no stop (no R denominator), else '—'.
+function realizedLabel(t: ReviewTrade): string {
+  if (t.realized_r !== null) return fmtR(t.realized_r);
+  if (t.realized_pct === null) return '—';
+  return (t.realized_pct > 0 ? '+' : '') + t.realized_pct.toFixed(1) + '%';
+}
 
 // ── the day-by-day strip (SPEC §11.1) ──
 function timeline(t: ReviewTrade): string {
@@ -101,9 +108,7 @@ function actionForm(action: string, tradeId: number, inner: string, extra = ''):
 
 function closedDetail(t: ReviewTrade): string {
   const a = t.adherence;
-  const realized = t.realized_r === null
-    ? (t.realized_pct === null ? '—' : (t.realized_pct > 0 ? '+' : '') + t.realized_pct.toFixed(1) + '%')
-    : fmtR(t.realized_r);
+  const realized = realizedLabel(t);
   const legRows = t.exits.map((e: ExitLeg) => `
     <tr>
       <td>d${e.day ?? '—'} ${esc(REASON_LABEL[e.reason ?? ''] ?? e.reason ?? 'exit')}
@@ -267,7 +272,7 @@ function bannerSection(items: BannerItem[]): string {
 function listRow(t: ReviewTrade, selected: string | null): string {
   const sel = String(t.id) === selected ? ' sel' : '';
   const right = t.status === 'closed'
-    ? `<span class="${cls(t.realized_r)}" style="float:right">${t.realized_r === null ? (t.realized_pct === null ? '—' : (t.realized_pct > 0 ? '+' : '') + t.realized_pct.toFixed(1) + '%') : fmtR(t.realized_r)}</span>`
+    ? `<span class="${cls(t.realized_r)}" style="float:right">${realizedLabel(t)}</span>`
     : `<span class="muted" style="float:right">${t.open_r === null ? 'open' : fmtR(t.open_r) + ' open'}</span>`;
   const tail = t.status === 'closed'
     ? ` → ${day(t.final_exit_date)}`
