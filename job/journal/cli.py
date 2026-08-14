@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import backup, books, counterfactual, db, equity, fills, flex, flex_client, review, risk, secrets, stockbit, stops, trades
+from . import backup, books, counterfactual, db, equity, export, fills, flex, flex_client, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -475,6 +475,31 @@ def cmd_risk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    """Write the curated LLM export for one book (SPEC §12): legend, aggregates,
+    then one JSON object per Trade normalized to R and ADR.
+
+    One book per export (§12.4) — a two-book export would put two incomparable
+    drawdown curves in one column. The output goes to ``--out`` or stdout so it
+    pipes straight into whatever consumes it.
+    """
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        text = export.export(
+            conn, book=args.book, date_from=args.date_from, date_to=args.date_to
+        )
+    finally:
+        conn.close()
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"Wrote {args.book} export to {args.out}")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def cmd_counterfactual(args: argparse.Namespace) -> int:
     """Score every closed Trade against all six variants and report the deltas.
 
@@ -745,6 +770,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_db_argument(cf_p)
     cf_p.set_defaults(func=cmd_counterfactual)
+
+    export_p = sub.add_parser(
+        "export",
+        help="write the curated LLM export (JSONL, legend + aggregates) for one book",
+    )
+    export_p.add_argument(
+        "--book", choices=books.BOOKS, required=True,
+        help="the one book to export — one book per export (never aggregated across)",
+    )
+    export_p.add_argument(
+        "--from", dest="date_from", default=None,
+        help="earliest entry date to include (ISO); seq gaps below it stay uncompacted",
+    )
+    export_p.add_argument(
+        "--to", dest="date_to", default=None,
+        help="latest entry date to include (ISO)",
+    )
+    export_p.add_argument(
+        "--out", default=None, help="write to this file instead of stdout",
+    )
+    _add_db_argument(export_p)
+    export_p.set_defaults(func=cmd_export)
 
     restore_p = sub.add_parser(
         "restore-check",
