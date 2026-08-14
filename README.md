@@ -99,8 +99,12 @@ JOURNAL_OFFSITE_DIR=/Volumes/encrypted/atj npm run job -- run   # snapshot + off
 npm run job -- restore-check          # restore newest snapshot to scratch, verify it opens
 # See docs/durability-restore-rehearsal.md for the written-down rehearsal record.
 
-# The localhost UI — reads the same file, renders "no Trades yet" and the
-# latest run record. Ctrl-C to exit.
+# The localhost UI — `/` is the weekly review surface (SPEC §11): a per-Trade
+# exit workbench with the attention banner, a by-book strip of counts (never
+# rates), the strict week plus unreviewed stragglers plus open Trades, and
+# actions that write straight through the CLI door (add stop/setup, add IDX
+# equity, override exit reason, edit note, mark reviewed). `/raw` keeps the
+# diagnostic skeleton (Trades/Fills/latest run). Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui
 
 npm run typecheck && npm test      # TypeScript UI + Python job

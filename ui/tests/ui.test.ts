@@ -185,8 +185,14 @@ test(
       const res = await fetch(ui.url);
       assert.equal(res.status, 200);
       const body = await res.text();
+      // `/` is now the weekly review surface (SPEC §11); the diagnostic skeleton
+      // moved to `/raw`.
       assert.match(body, /Automatic Trading Journal/);
-      assert.match(body, /No Trades yet\./);
+      assert.match(body, /Weekly review/);
+      assert.match(body, /no Trades closed this week/);
+
+      const raw = await fetch(`http://127.0.0.1:${ui.port}/raw`);
+      assert.match(await raw.text(), /No Trades yet\./);
 
       const health = await fetch(`http://127.0.0.1:${ui.port}/health`);
       assert.equal(health.status, 200);
