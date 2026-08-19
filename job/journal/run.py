@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from . import backup, books, counterfactual, nags, post_exit, regime
+from . import backup, bar_sync, books, counterfactual, nags, post_exit, regime
 
 
 @dataclass
@@ -194,14 +194,41 @@ def _prior_close_landed(conn, book: str, as_of: str) -> bool:
     return row is not None
 
 
-def _run_book_passes(conn, book: str, as_of: str) -> list[PassOutcome]:
+def _pass_bars(conn, book: str, as_of: str, cache) -> PassOutcome:
+    """Fill the bar cache for the book — the pass every other pass reads from.
+
+    Runs *before* the gate rather than under it: the gate asks whether the
+    book's benchmark has a bar older than ``as_of`` (§13.3), and on a fresh
+    machine nothing can ever satisfy that until something fetches. Gating the
+    fetch on the gate's own precondition is what kept every pass dark.
+
+    A missing fetcher is stated, not assumed away: the cache is injected by the
+    composition root, and a caller that wires none (every test that does not
+    want a socket) gets a gated pass rather than a silent no-op.
+    """
+    if cache is None:
+        return PassOutcome(book, "bars", "gated", "no bar fetcher configured")
+    try:
+        result = bar_sync.sync_book(conn, book, as_of, cache)
+    except Exception as exc:  # a fetch failing must not sink the run (§13.6)
+        return PassOutcome(book, "bars", "error", str(exc))
+    detail = result.summary()
+    if result.errors:
+        named = "; ".join(f"{o.symbol}: {o.detail}" for o in result.errors[:3])
+        more = "" if len(result.errors) <= 3 else f" (+{len(result.errors) - 3} more)"
+        return PassOutcome(book, "bars", "error", f"{detail} — {named}{more}")
+    return PassOutcome(book, "bars", "ran", detail)
+
+
+def _run_book_passes(conn, book: str, as_of: str, cache=None) -> list[PassOutcome]:
     """Run (or gate) every enrichment pass for one book on this run."""
+    outcomes: list[PassOutcome] = [_pass_bars(conn, book, as_of, cache)]
     if not _prior_close_landed(conn, book, as_of):
-        return [
+        outcomes.extend(
             PassOutcome(book, name, "gated", "prior trading day not yet closed")
             for name, _ in _PASSES
-        ]
-    outcomes: list[PassOutcome] = []
+        )
+        return outcomes
     for name, fn in _PASSES:
         try:
             detail = fn(conn, book, as_of)
@@ -211,11 +238,13 @@ def _run_book_passes(conn, book: str, as_of: str) -> list[PassOutcome]:
     return outcomes
 
 
-def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
+def execute_run(conn, as_of: Optional[str] = None, bar_cache=None) -> RunResult:
     """Run the daily job against an open connection and return the result.
 
     ``as_of`` defaults to today (UTC date). It is injectable so tests and
-    backfill can pin the frontier deterministically.
+    backfill can pin the frontier deterministically. ``bar_cache`` is the market
+    data seam (§4.4): the CLI wires the real one, and a caller that passes none
+    gets a gated bars pass instead of a socket.
     """
     as_of = as_of or datetime.now(timezone.utc).date().isoformat()
     # Validate shape early — an unparseable as-of is a caller bug, not run data.
@@ -254,7 +283,7 @@ def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
         # trading day having closed (§13.3). A book that errored advancing is not
         # enriched — there is no fresh frontier to enrich against.
         book_passes = (
-            _run_book_passes(conn, book, as_of)
+            _run_book_passes(conn, book, as_of, bar_cache)
             if outcome.status != "error"
             else []
         )

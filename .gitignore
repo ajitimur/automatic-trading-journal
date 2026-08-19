@@ -35,3 +35,6 @@ __pycache__/
 snapshots/
 archive/
 offsite/
+
+# The job runtime (yfinance); created by `python3 -m venv .venv`.
+.venv/

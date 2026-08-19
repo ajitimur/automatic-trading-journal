@@ -27,6 +27,19 @@ from .bars import Bar
 
 SOURCE = "yfinance"
 
+# Yahoo's market suffix per book (docs/research/ohlcv-sources.md): IDX equities
+# are ``.JK``, US equities are bare. Index tickers already arrive in Yahoo's own
+# form (``^JKSE``, ``QQQ``) and are passed through untouched — appending a
+# suffix to ``^JKSE`` would silently request a security that does not exist.
+_SUFFIX = {"IDX": ".JK", "US": ""}
+
+
+def vendor_symbol(book: str, symbol: str) -> str:
+    """The Yahoo ticker for a journal ``symbol`` on ``book``."""
+    if symbol.startswith("^"):
+        return symbol
+    return symbol + _SUFFIX.get(book, "")
+
 
 class YFinanceFetcher:
     """A :class:`journal.bars.BarFetcher` backed by the yfinance library."""
@@ -43,8 +56,13 @@ class YFinanceFetcher:
         self.backoff = backoff
         self._sleep = sleep
 
-    def fetch(self, symbol: str, start: str, end: str) -> Sequence[Bar]:
+    def fetch(
+        self, book: str, symbol: str, start: str, end: str
+    ) -> Sequence[Bar]:
         """Fetch daily bars for ``symbol`` over ``[start, end]`` (inclusive).
+
+        ``book`` selects the vendor ticker: the journal stores the symbol the
+        broker prints, and Yahoo wants a market suffix on IDX names.
 
         Retries transient failures with exponential backoff; re-raises the last
         error once the retries are exhausted, leaving the span-check/repair
@@ -53,7 +71,7 @@ class YFinanceFetcher:
         last_exc: Exception | None = None
         for attempt in range(self.retries):
             try:
-                return self._download_bars(symbol, start, end)
+                return self._download_bars(vendor_symbol(book, symbol), start, end)
             except Exception as exc:  # noqa: BLE001 — any failure is retryable
                 last_exc = exc
                 if attempt + 1 < self.retries:

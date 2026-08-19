@@ -59,7 +59,9 @@ class BarFetcher(Protocol):
 
     source: str
 
-    def fetch(self, symbol: str, start: str, end: str) -> Sequence[Bar]:
+    def fetch(
+        self, book: str, symbol: str, start: str, end: str
+    ) -> Sequence[Bar]:
         ...
 
 
@@ -177,7 +179,7 @@ class BarCache:
                 detail="served from cache",
             )
 
-        raw = list(self.fetcher.fetch(symbol, start, end))
+        raw = list(self.fetcher.fetch(book, symbol, start, end))
         check = span_check(raw, start, end)
         self._record_fetch(book, symbol, check)
         if not check.ok:

@@ -27,8 +27,17 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmp.name, "journal.db")
+        # `run` is the one command that reaches the network, through the bar
+        # pass. These are integration tests of the CLI, not of Yahoo: switch the
+        # fetch off so the whole command still runs, without a socket.
+        self._bars_before = os.environ.get(cli.ENV_BARS)
+        os.environ[cli.ENV_BARS] = "off"
 
     def tearDown(self):
+        if self._bars_before is None:
+            os.environ.pop(cli.ENV_BARS, None)
+        else:
+            os.environ[cli.ENV_BARS] = self._bars_before
         self.tmp.cleanup()
 
     def _run(self):
