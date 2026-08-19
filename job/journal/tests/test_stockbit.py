@@ -23,6 +23,7 @@ SAMPLES = os.path.join(
 )
 GOOD = os.path.join(SAMPLES, "stockbit-tc-fixture.txt")
 SHIFTED = os.path.join(SAMPLES, "stockbit-tc-column-shift-fixture.txt")
+SELL_STAMP = os.path.join(SAMPLES, "stockbit-tc-sell-stamp-duty-fixture.txt")
 
 
 def _read(path: str) -> str:
@@ -79,6 +80,42 @@ class FeeGateTest(unittest.TestCase):
         # it and quarantines the document rather than landing 100× quantities.
         with self.assertRaises(stockbit.QuarantineError):
             stockbit.parse_tc_text(_read(SHIFTED))
+
+    def test_stamp_duty_on_a_sell_document_reconciles(self):
+        # The sample set only ever showed stamp duty in the buy column, and the
+        # parser inferred it from the side. Real statements charge it on sells
+        # too — three of thirty-four from July-August 2026 — and inferring it
+        # away quarantined every one of them.
+        fills = stockbit.parse_tc_text(_read(SELL_STAMP))
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0].quantity, -8_400.0)
+
+    def test_a_zero_stamp_duty_column_is_read_as_zero_not_assumed(self):
+        # Most documents print a bare ``0`` rather than ``0.00``; reading the
+        # line has to cope with both, or every ordinary day would quarantine.
+        text = _read(SELL_STAMP).replace(
+            "Stamp Duty                                     0          10,000.00",
+            "Stamp Duty                                     0                  0",
+        ).replace(
+            "Total Cost                                  0.00      20,937,500.00",
+            "Total Cost                                  0.00      20,947,500.00",
+        ).replace(
+            "Payment due to you IDR                      0.00      20,937,500.00",
+            "Payment due to you IDR                      0.00      20,947,500.00",
+        )
+        fills = stockbit.parse_tc_text(text)
+        self.assertEqual(len(fills), 1)
+
+    def test_an_unstated_stamp_duty_is_never_assumed_to_be_zero(self):
+        # The charge is a stated fact. A document that prints no line at all is
+        # not silently treated as unstamped — that is the failure this whole
+        # change came from.
+        text = "\n".join(
+            line for line in _read(SELL_STAMP).splitlines()
+            if "Stamp Duty" not in line
+        )
+        with self.assertRaises(stockbit.StockbitError):
+            stockbit.parse_tc_text(text)
 
 
 class LedgerTest(unittest.TestCase):
