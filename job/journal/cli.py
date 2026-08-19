@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import backup, books, counterfactual, db, equity, export, fills, flex, flex_client, review, risk, secrets, stockbit, stops, trades
+from . import backup, books, counterfactual, db, doh, equity, export, fills, flex, flex_client, flex_transport, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -312,6 +312,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         flex.FlexError,
         flex_client.InterceptionError,
         flex_client.EmptyResponseError,
+        flex_transport.TransportError,
+        doh.DohError,
         secrets.SecretNotFound,
     ) as exc:
         # The network path lies (SPEC §13.3): a Flex error body, DNS
@@ -378,6 +380,8 @@ def cmd_fetch_nav(args: argparse.Namespace) -> int:
         flex.FlexError,
         flex_client.InterceptionError,
         flex_client.EmptyResponseError,
+        flex_transport.TransportError,
+        doh.DohError,
         secrets.SecretNotFound,
     ) as exc:
         # The NAV XML joins the keep-forever tier only once it is captured; a
