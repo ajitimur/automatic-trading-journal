@@ -70,13 +70,19 @@ def _idx_equity(conn) -> List[Nag]:
 def _idx_intake(conn) -> List[Nag]:
     # The IDX TC is hand-dropped (§13.2): a forgotten drop is invisible, so the
     # last drop's date is stated as a fact — "did I miss a day" (§11.4).
+    #
+    # Scoped to the TC kind, not to every IDX document. The question is when the
+    # *trade* intake last ran; a hand-typed equity snapshot is a different fact
+    # with its own nag, and letting it answer this one would report a healthy
+    # intake on a book that has not seen a TC in weeks.
     row = conn.execute(
-        "SELECT MAX(fetched_at) f FROM raw_document WHERE book = ?",
-        (books.IDX,),
+        "SELECT MAX(fetched_at) f FROM raw_document WHERE book = ? AND kind = ?",
+        (books.IDX, "stockbit-tc"),
     ).fetchone()
     last = row["f"] if row else None
+    # ``fetched_at`` carries a full timestamp; the banner states a day (§11.4).
     detail = (
-        f"IDX intake: last drop {last}"
+        f"IDX intake: last drop {last[:10]}"
         if last
         else "IDX intake: no drop recorded"
     )

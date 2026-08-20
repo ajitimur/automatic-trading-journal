@@ -472,6 +472,38 @@ def default_db_path() -> str:
     )
 
 
+def record_raw_document(
+    conn: sqlite3.Connection, *, book: str, kind: str, fetched_at: str, content: str
+) -> int:
+    """Record a raw source document in the keep-forever tier, returning its id.
+
+    The DB half of SPEC §13.5's raw tier, beside ``backup.archive_raw``'s
+    filesystem half. Every intake path writes here, which is what makes "when
+    did this book last receive anything" a question the store can answer —
+    without it the IDX intake nag reads an empty table and reports a forgotten
+    drop that never happened.
+
+    Deduped on ``(book, kind, content)``, matching the content-addressing of the
+    filesystem archive: re-capturing an identical document returns the existing
+    row rather than adding one, so the rolling-365 NAV window's overlapping
+    fetches and a re-dropped TC both stay flat. ``fetched_at`` therefore dates
+    the document's *first* arrival, which is what an intake nag should report —
+    re-dropping August's TC in September does not make the book's data current.
+    """
+    existing = conn.execute(
+        "SELECT id FROM raw_document WHERE book = ? AND kind = ? AND content = ?",
+        (book, kind, content),
+    ).fetchone()
+    if existing is not None:
+        return int(existing["id"])
+    cur = conn.execute(
+        "INSERT INTO raw_document (book, kind, fetched_at, content) VALUES (?, ?, ?, ?)",
+        (book, kind, fetched_at, content),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
 def connect(db_path: str) -> sqlite3.Connection:
     """Open (creating if absent) the SQLite file and apply the schema.
 

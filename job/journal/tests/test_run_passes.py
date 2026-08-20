@@ -118,6 +118,45 @@ class NagsTest(unittest.TestCase):
         self.assertIn("idx_intake", kinds)
         conn.close()
 
+    # ── The intake nag reports a drop that happened (SPEC §11.4, §13.2) ──
+    def test_a_recorded_drop_moves_the_intake_nag_off_never(self):
+        """Regression: the nag read a table the IDX drop path never wrote.
+
+        It reported "no drop recorded" indefinitely — through every weekly
+        review — no matter how many TCs had landed, so the one fact meant to
+        catch a forgotten drop could never distinguish one from a healthy book.
+        """
+        conn = db.connect(self.db_path)
+        db.record_raw_document(
+            conn,
+            book=books.IDX,
+            kind="stockbit-tc",
+            fetched_at="2026-08-11T02:00:00+00:00",
+            content="<tc text>",
+        )
+        result = execute_run(conn, as_of="2026-08-13")
+
+        (intake,) = [n for n in result.nags if n.kind == "idx_intake"]
+        self.assertIn("2026-08-11", intake.detail)
+        self.assertNotIn("no drop recorded", intake.detail)
+        conn.close()
+
+    # ── A hand-typed equity snapshot must not answer the intake question ──
+    def test_a_non_tc_idx_document_does_not_satisfy_the_intake_nag(self):
+        conn = db.connect(self.db_path)
+        db.record_raw_document(
+            conn,
+            book=books.IDX,
+            kind="soa-pdf",
+            fetched_at="2026-08-11T02:00:00+00:00",
+            content="<statement>",
+        )
+        result = execute_run(conn, as_of="2026-08-13")
+
+        (intake,) = [n for n in result.nags if n.kind == "idx_intake"]
+        self.assertIn("no drop recorded", intake.detail)
+        conn.close()
+
     def test_a_supplied_stop_and_setup_raise_no_nag(self):
         conn = db.connect(self.db_path)
         _seed_closed_trade(

@@ -110,6 +110,34 @@ class LedgerTest(unittest.TestCase):
             fills.import_stockbit_file(self.conn, SHIFTED)
         self.assertEqual(self._count(), 0)
 
+    def _raw_docs(self):
+        return self.conn.execute(
+            "SELECT book, kind, fetched_at FROM raw_document WHERE kind = 'stockbit-tc'"
+        ).fetchall()
+
+    # ── A drop records itself, so the intake nag has something to read (§11.4) ──
+    def test_dropping_a_tc_records_it_in_the_keep_forever_tier(self):
+        fills.import_stockbit_file(self.conn, GOOD, fetched_at="2026-08-18T02:00:00+00:00")
+        (doc,) = self._raw_docs()
+        self.assertEqual(doc["book"], "IDX")
+        self.assertEqual(doc["fetched_at"], "2026-08-18T02:00:00+00:00")
+
+    # ── Re-dropping the same TC does not invent a second intake ──
+    def test_re_dropping_the_same_tc_records_one_document(self):
+        fills.import_stockbit_file(self.conn, GOOD, fetched_at="2026-08-18T02:00:00+00:00")
+        fills.import_stockbit_file(self.conn, GOOD, fetched_at="2026-09-01T02:00:00+00:00")
+        (doc,) = self._raw_docs()
+        # Dated to its first arrival: re-dropping August's TC in September does
+        # not make the book's data current.
+        self.assertEqual(doc["fetched_at"], "2026-08-18T02:00:00+00:00")
+
+    # ── A quarantined drop still counts as intake: dropped, not forgotten ──
+    def test_a_quarantined_drop_is_still_recorded(self):
+        with self.assertRaises(stockbit.QuarantineError):
+            fills.import_stockbit_file(self.conn, SHIFTED, fetched_at="2026-08-18T02:00:00+00:00")
+        self.assertEqual(self._count(), 0)          # nothing landed in the ledger
+        self.assertEqual(len(self._raw_docs()), 1)  # but the drop is on record
+
 
 if __name__ == "__main__":
     unittest.main()
