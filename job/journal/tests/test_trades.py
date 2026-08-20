@@ -225,3 +225,46 @@ class TradesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeldTradeExitTest(unittest.TestCase):
+    """A same-day round trip whose Trade is held for an unanswered stop (ADR 0010)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _round_trip(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "FPNI", 100, 458.0, "2026-08-19T09:30:00-04:00"),
+            _sell("s1", "FPNI", 100, 500.0, "2026-08-19T15:00:00-04:00"),
+        ])
+
+    def test_the_exit_waits_with_its_held_trade(self):
+        self._round_trip()
+        result = trades.confirm(self.conn, demand_stop=True)
+        self.assertEqual(result.new_trades, 0)
+        self.assertEqual(result.exits_allocated, 0)  # not an error — it waits
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM trade_exit").fetchone()["n"], 0
+        )
+
+    def test_answering_lands_the_trade_and_its_exit_together(self):
+        self._round_trip()
+        trades.confirm(self.conn, demand_stop=True)  # held
+        result = trades.confirm(
+            self.conn, stops_by_symbol={"FPNI": 440.0}, demand_stop=True
+        )
+        self.assertEqual(result.new_trades, 1)
+        self.assertEqual(result.exits_allocated, 1)
+        row = self.conn.execute(
+            "SELECT status, stop, stop_provenance FROM trade"
+        ).fetchone()
+        self.assertEqual(row["status"], "closed")
+        self.assertEqual(row["stop"], 440.0)
+        # The stop was answered at commit, before any Exit was on record.
+        self.assertEqual(row["stop_provenance"], "recorded")

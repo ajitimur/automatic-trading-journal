@@ -272,8 +272,16 @@ def _entry_proposals(
 
     # Sibling entry days in this same batch count too: a Monday and a Wednesday
     # cohort dropped together are two Trades, and each says so about the other.
+    #
+    # Only the *uncommitted* cohorts, though. Every cohort the ledger has ever
+    # seen is in `cohorts`, so including them all made the note call long-closed
+    # Trades "open" — at the one moment the trader is deciding, and about the very
+    # position they are deciding on.
     batch_dates: Dict[Tuple[str, str], set] = {}
-    for (book, symbol, date) in cohorts:
+    for key in cohorts:
+        if committed.get(key) is not None:
+            continue
+        book, symbol, date = key
         batch_dates.setdefault((book, symbol), set()).add(date)
 
     proposals: List[Proposal] = []
@@ -282,7 +290,7 @@ def _entry_proposals(
         prior = committed.get((book, symbol, date))
 
         if prior is None:
-            siblings = set(open_symbols.get((book, symbol), [])) | batch_dates[(book, symbol)]
+            siblings = set(open_symbols.get((book, symbol), [])) | batch_dates.get((book, symbol), set())
             others = [d for d in siblings if d != date]
             note = (
                 f"A different entry day is a different Trade — this does not add to "
@@ -664,6 +672,13 @@ def confirm(
         if p.kind != "exit-allocation":
             continue
         allocations = _resolve_allocations(p, overrides, ids, open_qty)
+        # An exit whose Trade is being held for an unanswered stop has nowhere to
+        # land yet (ADR 0010) — a same-day round trip proposes both at once. It
+        # waits with its Trade rather than erroring, and both go through together
+        # on the confirm that answers the demand.
+        if any((a.book, a.symbol, a.entry_date) not in ids for a in allocations):
+            result.parked_exits += 1
+            continue
         if p.over_allocated > 0:
             # The part that fits commits below; the remainder stays unallocated
             # on the Fill and re-derives as an orphan exit (SPEC §3.4, §5.2).
