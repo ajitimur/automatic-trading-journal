@@ -39,9 +39,31 @@ def gather(conn, as_of: Optional[str] = None) -> List[Nag]:
     for book in books.BOOKS:
         out.extend(_missing_field(conn, book, "stop", "missing_stop"))
         out.extend(_missing_field(conn, book, "setup", "missing_setup"))
+    out.extend(_us_intake(conn, as_of))
     out.extend(_idx_equity(conn, as_of))
     out.extend(_idx_intake(conn, as_of))
     return out
+
+
+def _us_intake(conn, as_of: str) -> List[Nag]:
+    """When a Flex statement last landed (SPEC §4.1, §11.4).
+
+    The US intake is meant to run unattended, which is exactly why it needs a
+    stated fact: an unattended thing that stops running is silent by nature. The
+    IDX nag catches a *forgotten* drop; this one catches a *broken* fetch, and
+    the failure it is built for is the one where nobody notices for weeks.
+    """
+    row = conn.execute(
+        "SELECT MAX(fetched_at) f FROM raw_document WHERE book = ? AND kind = ?",
+        (books.US, "flex-trades-xml"),
+    ).fetchone()
+    last = row["f"] if row else None
+    detail = (
+        f"US intake: last fetch {last[:10]}{_elapsed(conn, books.US, last[:10], as_of)}"
+        if last
+        else "US intake: no fetch recorded"
+    )
+    return [Nag(books.US, "us_intake", detail)]
 
 
 def _elapsed(conn, book: str, since: str, as_of: str) -> str:

@@ -52,7 +52,9 @@ def insert_fills(conn: sqlite3.Connection, records: Iterable[flex.Fill]) -> int:
     return inserted
 
 
-def import_flex_text(conn: sqlite3.Connection, xml_text: str) -> int:
+def import_flex_text(
+    conn: sqlite3.Connection, xml_text: str, *, fetched_at: Optional[str] = None
+) -> int:
     """Parse a Flex XML string and append its Fills to the ledger.
 
     The single body path for both a file on disk and a statement just fetched
@@ -60,7 +62,20 @@ def import_flex_text(conn: sqlite3.Connection, xml_text: str) -> int:
     :class:`flex.FlexError` on an error body rather than a statement (SPEC §4.1).
     Remembered symbol rules are applied here, before anything reaches the confirm
     queue (SPEC §5.4).
+
+    The statement is recorded in the keep-forever tier, which is what gives the
+    US intake nag something to read (SPEC §11.4). Recorded *before* parsing, for
+    the reason the archive keeps it: an error body is exactly what a later fix
+    must be re-run over, and "the fetch ran and returned junk" is a different
+    fact from "the fetch never ran".
     """
+    db.record_raw_document(
+        conn,
+        book="US",
+        kind="flex-trades-xml",
+        fetched_at=fetched_at or datetime.now(timezone.utc).isoformat(),
+        content=xml_text,
+    )
     return insert_fills(conn, trades.apply_symbol_rules(conn, list(flex.parse_flex(xml_text))))
 
 

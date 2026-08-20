@@ -41,18 +41,35 @@ class GatingTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_passes_gate_when_prior_close_absent(self):
+    def test_enrichment_passes_gate_when_prior_close_absent(self):
         # No benchmark bar for either book: neither book's prior trading day has
         # closed as far as the job can see, so every enrichment pass gates off.
         conn = db.connect(self.db_path)
         result = execute_run(conn, as_of="2026-08-13")
 
-        self.assertEqual(len(result.passes), len(books.BOOKS) * 3)
-        self.assertTrue(all(p.status == "gated" for p in result.passes))
+        enrichment = [p for p in result.passes if p.name != "intake"]
+        self.assertEqual(len(enrichment), len(books.BOOKS) * 3)
+        self.assertTrue(all(p.status == "gated" for p in enrichment))
 
-        rows = conn.execute("SELECT * FROM run_pass").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM run_pass WHERE name != 'intake'"
+        ).fetchall()
         self.assertEqual(len(rows), len(books.BOOKS) * 3)
         self.assertTrue(all(r["status"] == "gated" for r in rows))
+        conn.close()
+
+    # -- Intake is never gated: fills are facts, independent of the bar series --
+    def test_intake_runs_even_when_enrichment_gates(self):
+        conn = db.connect(self.db_path)
+        result = execute_run(conn, as_of="2026-08-13")
+
+        intake = {p.book: p for p in result.passes if p.name == "intake"}
+        self.assertEqual(set(intake), set(books.BOOKS))
+        self.assertTrue(all(p.status == "ran" for p in intake.values()))
+        # With no query id configured it states that, rather than failing quietly.
+        self.assertIn("no Flex query id configured", intake[books.US].detail)
+        # IDX has no unattended intake by design (SPEC 13.2).
+        self.assertIn("hand-dropped", intake[books.IDX].detail)
         conn.close()
 
     def test_passes_run_when_prior_close_present(self):
@@ -67,9 +84,10 @@ class GatingTest(unittest.TestCase):
         self.assertEqual(
             set(by_book[books.US].values()), {"ran"}, by_book[books.US]
         )
-        self.assertEqual(
-            set(by_book[books.IDX].values()), {"gated"}, by_book[books.IDX]
-        )
+        # IDX enrichment gates; its intake pass still ran (and is a no-op).
+        idx = dict(by_book[books.IDX])
+        self.assertEqual(idx.pop("intake"), "ran")
+        self.assertEqual(set(idx.values()), {"gated"}, idx)
         conn.close()
 
     def test_run_never_commits_a_trade(self):
@@ -176,6 +194,36 @@ class NagsTest(unittest.TestCase):
         (intake,) = [n for n in result.nags if n.kind == "idx_intake"]
         self.assertIn("last drop 2026-08-11", intake.detail)
         self.assertNotIn("trading day", intake.detail)
+        conn.close()
+
+    # ── US intake is a stated fact too: an unattended fetch that stops is silent ──
+    def test_us_intake_is_stated_even_when_it_never_ran(self):
+        conn = db.connect(self.db_path)
+        result = execute_run(conn, as_of="2026-08-13")
+
+        (us,) = [n for n in result.nags if n.kind == "us_intake"]
+        self.assertEqual(us.book, books.US)
+        self.assertIn("no fetch recorded", us.detail)
+        conn.close()
+
+    def test_a_recorded_fetch_moves_the_us_intake_nag_off_never(self):
+        conn = db.connect(self.db_path)
+        db.record_raw_document(
+            conn, book=books.US, kind="flex-trades-xml",
+            fetched_at="2026-08-11T02:00:00+00:00", content="<FlexQueryResponse/>",
+        )
+        for d in ("2026-08-12", "2026-08-13"):
+            conn.execute(
+                "INSERT INTO bar (book, symbol, date, open, high, low, close, volume) "
+                "VALUES (?, ?, ?, 10, 11, 9, 10, 1000)",
+                (books.US, books.BENCHMARKS[books.US], d),
+            )
+        conn.commit()
+        result = execute_run(conn, as_of="2026-08-13")
+
+        (us,) = [n for n in result.nags if n.kind == "us_intake"]
+        self.assertIn("last fetch 2026-08-11", us.detail)
+        self.assertIn("(2 trading days ago)", us.detail)
         conn.close()
 
     # ── A hand-typed equity snapshot must not answer the intake question ──

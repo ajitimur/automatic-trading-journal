@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS run_book (
 CREATE TABLE IF NOT EXISTS run_pass (
     run_id INTEGER NOT NULL REFERENCES run(id),
     book   TEXT NOT NULL,
-    name   TEXT NOT NULL,           -- 'regime' | 'counterfactual' | 'freeze'
+    name   TEXT NOT NULL,           -- 'intake' | 'regime' | 'counterfactual' | 'freeze'
     status TEXT NOT NULL,           -- 'ran' | 'gated' | 'error'
     detail TEXT,                    -- counts stamped/scored/frozen, or why gated
     PRIMARY KEY (run_id, book, name)
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS run_pass (
 CREATE TABLE IF NOT EXISTS run_nag (
     run_id INTEGER NOT NULL REFERENCES run(id),
     book   TEXT NOT NULL,
-    kind   TEXT NOT NULL,           -- 'missing_stop' | 'missing_setup' | 'idx_equity' | 'idx_intake'
+    kind   TEXT NOT NULL,           -- 'missing_stop' | 'missing_setup' | 'us_intake' | 'idx_equity' | 'idx_intake'
     detail TEXT NOT NULL,           -- the stated fact
     PRIMARY KEY (run_id, book, kind)
 );

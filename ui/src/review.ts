@@ -113,7 +113,7 @@ export interface BookCount {
 }
 
 export interface BannerItem {
-  kind: 'stop' | 'insufficient_history' | 'run' | 'idx_intake' | 'idx_equity' | 'repair';
+  kind: 'stop' | 'insufficient_history' | 'run' | 'us_intake' | 'idx_intake' | 'idx_equity' | 'repair';
   severity: 'bad' | 'warn' | 'info';
   title: string;
   body: string;
@@ -554,6 +554,17 @@ function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[
   // market data and arrives whether or not anything was dropped, so the banner
   // reported a healthy intake on a book that had not seen a TC in months.
   if (tableExists(db, 'raw_document')) {
+    // US intake runs unattended (SPEC §4.1), which is exactly why it needs a
+    // stated fact: a thing that runs by itself is silent when it stops.
+    const fetched = db
+      .prepare("SELECT MAX(fetched_at) AS d FROM raw_document WHERE book='US' AND kind='flex-trades-xml'")
+      .get() as { d: string | null };
+    items.push({
+      kind: 'us_intake', severity: 'info', title: 'US intake',
+      body: fetched.d
+        ? `last fetch ${fetched.d.slice(0, 10)}${elapsed(db, 'US', fetched.d.slice(0, 10), asOf)}.`
+        : 'no fetch recorded.',
+    });
     const drop = db
       .prepare("SELECT MAX(fetched_at) AS d FROM raw_document WHERE book='IDX' AND kind='stockbit-tc'")
       .get() as { d: string | null };

@@ -200,6 +200,23 @@ class FlexClient:
             )
 
 
+# The saved Activity Flex Query to fetch unattended (SPEC §4.1). Install-time
+# config, not a secret — a query id identifies a report, it does not authorise
+# one; the token is the secret and resolves separately (SPEC §13.4). Carried as
+# an environment variable for the same reason ``JOURNAL_DB`` is: the launchd
+# plist is where this installation's specifics live, and nothing is hardcoded in
+# the job.
+QUERY_ID_ENV = "JOURNAL_IBKR_FLEX_QUERY_ID"
+
+
+def default_query_id() -> Optional[str]:
+    """The configured Flex query id, or ``None`` when unset."""
+    import os
+
+    value = os.environ.get(QUERY_ID_ENV, "").strip()
+    return value or None
+
+
 def build_default_client(
     warn: Optional[Callable[[str], None]] = None,
     today: Optional[date] = None,

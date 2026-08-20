@@ -3,11 +3,19 @@
 Every run is *"for each book, advance from ``last_processed_trading_date`` to
 the present"* — not "process today". So a missed day is not an error, and a run
 that catches up several days records that it did (§13.1). Advancing moves the
-per-book cursor to the run's as-of date; then, **per book**, the enrichment
-passes run — regime, counterfactual, freeze — each **gating on whether that
-book's prior trading day has actually closed** (§13.3), read from the benchmark
-bar cache rather than trusting the clock. **The job enriches but never commits a
-Trade**, and it carries the nags (§11.4) as stated facts on the run record.
+per-book cursor to the run's as-of date; then, **per book**, the passes run.
+
+**Intake runs first and is never gated**: it pulls the broker's own trade export
+into the Fill ledger (§4.1, US only — the IDX TC is hand-dropped by design,
+§13.2). Fills are facts about what the trader did and do not depend on the bar
+series having caught up. The **enrichment** passes — regime, counterfactual,
+freeze — then run, each **gating on whether that book's prior trading day has
+actually closed** (§13.3), read from the benchmark bar cache rather than
+trusting the clock.
+
+**The job enriches but never commits a Trade** — appending Fills is not
+committing, since the confirm queue remains the only thing that derives a Trade
+(§5.1) — and it carries the nags (§11.4) as stated facts on the run record.
 
 Errors are recorded as data, not raised (§13.6): a book that fails advancing is
 written to its ``run_book`` row with ``status='error'``, a pass that fails is
@@ -22,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from . import backup, books, counterfactual, nags, post_exit, regime
+from . import backup, books, counterfactual, fills, flex_client, nags, post_exit, regime
 
 
 @dataclass
@@ -38,7 +46,7 @@ class BookOutcome:
 @dataclass
 class PassOutcome:
     book: str
-    name: str    # 'regime' | 'counterfactual' | 'freeze'
+    name: str    # 'intake' | 'regime' | 'counterfactual' | 'freeze'
     status: str  # 'ran' | 'gated' | 'error'
     detail: Optional[str] = None
 
@@ -157,6 +165,37 @@ def _pass_freeze(conn, book: str, as_of: str) -> str:
     return f"{in_book} Trade(s) frozen"
 
 
+def _pass_intake(conn, book: str, as_of: str) -> str:
+    """Pull the broker's own trade export into the Fill ledger (SPEC §4.1).
+
+    US only. §4.1 specifies the Activity Flex Query "runs unattended: no browser,
+    no 2FA" — that is the whole reason IBKR is treated differently from Stockbit,
+    whose TC is deliberately hand-dropped (§13.2). Until this pass existed the
+    unattended half was specified and never wired, so the US ledger silently went
+    stale between manual `journal fetch` runs.
+
+    **This does not breach the one-door rule** (SPEC §5.1). It appends *Fills*,
+    which are facts from the broker; no Trade is derived and nothing is committed
+    — the confirm queue remains the only thing that creates a Trade, and it will
+    now demand a stop for each one (ADR 0010).
+
+    Ungated, unlike the enrichment passes: a fetch does not depend on the prior
+    close having landed, and a book whose bars are late still wants its fills.
+    """
+    if book != books.US:
+        return "not applicable — the IDX TC is hand-dropped (SPEC §13.2)"
+    query_id = flex_client.default_query_id()
+    if not query_id:
+        return (
+            "skipped — no Flex query id configured "
+            f"(set {flex_client.QUERY_ID_ENV})"
+        )
+    client = flex_client.build_default_client()
+    statement = client.fetch_statement(query_id)
+    inserted = fills.import_flex_text(conn, statement)
+    return f"{inserted} new fill(s) from Flex query {query_id}"
+
+
 _PASSES = (
     ("regime", _pass_regime),
     ("counterfactual", _pass_counterfactual),
@@ -195,13 +234,23 @@ def _prior_close_landed(conn, book: str, as_of: str) -> bool:
 
 
 def _run_book_passes(conn, book: str, as_of: str) -> list[PassOutcome]:
-    """Run (or gate) every enrichment pass for one book on this run."""
+    """Run (or gate) every pass for one book on this run.
+
+    Intake runs first and is never gated: the fills are facts about what the
+    trader did, independent of whether the bar series has caught up.
+    """
+    outcomes: list[PassOutcome] = []
+    try:
+        outcomes.append(PassOutcome(book, "intake", "ran", _pass_intake(conn, book, as_of)))
+    except Exception as exc:  # the network path lies (§13.3) — record, never raise
+        outcomes.append(PassOutcome(book, "intake", "error", str(exc)))
+
     if not _prior_close_landed(conn, book, as_of):
-        return [
+        outcomes.extend(
             PassOutcome(book, name, "gated", "prior trading day not yet closed")
             for name, _ in _PASSES
-        ]
-    outcomes: list[PassOutcome] = []
+        )
+        return outcomes
     for name, fn in _PASSES:
         try:
             detail = fn(conn, book, as_of)
