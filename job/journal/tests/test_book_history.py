@@ -16,7 +16,7 @@ import os
 import tempfile
 import unittest
 
-from journal import db
+from journal import book_history, books, db
 from journal import book_history as bh
 
 
@@ -174,3 +174,58 @@ class BookHistoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopeStartTest(unittest.TestCase):
+    """Scope Start bounds the drawdown curve (ADR 0008)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _trade(self, tid, entry_date, entry, stop, exit_price, exit_date):
+        self.conn.execute(
+            "INSERT INTO trade (id, book, symbol, entry_date, entry_qty, "
+            "entry_avg_price, status, stop, stop_provenance) "
+            "VALUES (?, 'US', ?, ?, 100, ?, 'closed', ?, 'recorded')",
+            (tid, f"S{tid}", entry_date, entry, stop),
+        )
+        self.conn.execute(
+            "INSERT INTO trade_exit (trade_id, source, source_ref, exit_date, quantity, price) "
+            "VALUES (?, 'ibkr', ?, ?, 100, ?)",
+            (tid, f"x{tid}", exit_date, exit_price),
+        )
+        self.conn.commit()
+
+    def test_no_scope_start_counts_everything(self):
+        self._trade(1, "2026-07-01", 100, 90, 120, "2026-07-05")
+        self._trade(2, "2026-08-20", 100, 90, 80, "2026-08-25")
+        self.assertEqual(len(book_history.project(self.conn, "US").rows), 2)
+
+    def test_pre_boundary_trades_leave_the_curve(self):
+        self._trade(1, "2026-07-01", 100, 90, 120, "2026-07-05")
+        self._trade(2, "2026-08-20", 100, 90, 80, "2026-08-25")
+        books.set_scope_start(self.conn, "US", "2026-08-18")
+
+        rows = book_history.project(self.conn, "US").rows
+        self.assertEqual([r.trade_id for r in rows], [2])
+
+    def test_a_pre_boundary_win_no_longer_sets_the_high_water_mark(self):
+        """The reason the curve must be scoped, not just the row list.
+
+        A +2R Trade from the old record would set a peak the restarted record is
+        measured against, so the first new losing Trade would read as a drawdown
+        from a run it never had.
+        """
+        self._trade(1, "2026-07-01", 100, 90, 120, "2026-07-05")   # +2R, old record
+        self._trade(2, "2026-08-20", 100, 90, 80, "2026-08-25")    # −2R, new record
+        books.set_scope_start(self.conn, "US", "2026-08-18")
+
+        (row,) = book_history.project(self.conn, "US").rows
+        # Measured against its own record's mark (0), not the old +2R peak.
+        self.assertEqual(row.trade_id, 2)
+        self.assertNotEqual(row.book_drawdown_r_at_entry, 2.0)

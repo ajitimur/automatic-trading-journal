@@ -44,7 +44,7 @@ import json
 import sqlite3
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from . import book_history
+from . import book_history, books
 from .counterfactual import RESOLVED, CounterfactualStore, realized_r as cf_realized_r
 from .enrichment import EnrichmentStore
 from .exit_enrichment import ExcursionStore, ExitGeometryStore
@@ -436,7 +436,9 @@ def _emit(record: Dict, ranks: Dict[str, Optional[int]]) -> Dict:
 
 
 def _aggregate_block(records: Sequence[Dict], per_book: Dict[str, book_history.BookHistory],
-                     book_order: Sequence[str], date_from: str, date_to: str) -> str:
+                     book_order: Sequence[str], date_from: str, date_to: str,
+                     scope_starts: Optional[Dict[str, str]] = None,
+                     withheld: Optional[Dict[str, int]] = None) -> str:
     """The baseline block — every figure with its `n`, plus each book's
     drawdown-curve exclusion count (SPEC §12.2)."""
     lines = [
@@ -446,6 +448,20 @@ def _aggregate_block(records: Sequence[Dict], per_book: Dict[str, book_history.B
     ]
     scope = book_order[0] + " book" if len(book_order) == 1 else "books " + ", ".join(book_order)
     lines.append(f"Scope: {scope}, {date_from} to {date_to}. n={len(records)}.")
+
+    # Scope Start is stated, never silent (ADR 0008). A reader who is not told the
+    # record begins at a boundary will read "the journal holds 7 trades" as the
+    # whole trading history rather than as everything since the restart.
+    for book in book_order:
+        start = (scope_starts or {}).get(book, books.NO_SCOPE_START)
+        if start == books.NO_SCOPE_START:
+            continue
+        held = (withheld or {}).get(book, 0)
+        lines.append(
+            f"{book} Scope Start {start}: {held} earlier Trade(s) are in the journal "
+            "and withheld from this export and every figure above. They are not "
+            "missing data — they are outside the record this export describes."
+        )
 
     for book in book_order:
         rows = [r for r in records if r["book"] == book]
@@ -506,13 +522,24 @@ def export_books(conn: sqlite3.Connection, *, book_list: Sequence[str],
     s = _Stores(conn)
     records: List[Dict] = []
     per_book: Dict[str, book_history.BookHistory] = {}
+    scope_starts: Dict[str, str] = {}
+    withheld: Dict[str, int] = {}
 
     for book in book_list:
+        scope_starts[book] = books.scope_start(conn, book)
+        withheld[book] = conn.execute(
+            "SELECT COUNT(*) AS n FROM trade WHERE book = ? AND entry_date < ?",
+            (book, scope_starts[book]),
+        ).fetchone()["n"]
         bh = book_history.project(conn, book)
         per_book[book] = bh
         by_id = {r.trade_id: r for r in bh.rows}
+        # Scope Start bounds the export (ADR 0008): a pre-boundary Trade is
+        # readable in the journal but never shipped, so nothing an LLM reasons
+        # over includes the stop-less stretch the record was restarted to leave.
         trades = conn.execute(
-            "SELECT * FROM trade WHERE book=? ORDER BY entry_date, id", (book,)
+            "SELECT * FROM trade WHERE book=? AND entry_date >= ? ORDER BY entry_date, id",
+            (book, books.scope_start(conn, book)),
         ).fetchall()
         for t in trades:
             if date_from is not None and t["entry_date"] < date_from:
@@ -531,7 +558,8 @@ def export_books(conn: sqlite3.Connection, *, book_list: Sequence[str],
     parts = [
         LEGEND,
         "",
-        _aggregate_block(records, per_book, list(book_list), lo, hi),
+        _aggregate_block(records, per_book, list(book_list), lo, hi,
+                         scope_starts, withheld),
         "# One JSON object per trade. See legend above for units.",
     ]
     for rec, rank in zip(records, ranks):

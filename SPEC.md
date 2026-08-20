@@ -51,7 +51,7 @@ Each of these was ruled out deliberately, not overlooked.
 | **Intraday bars** | Daily is sufficient for every field in play, and intraday would likely make the IDX side infeasible. |
 | **Chart images** | For LLM consumption, numbers are strictly more precise and vision on candle charts is lossy. For human review, the workbench timeline covers it. |
 | **Excel history migration** | The existing sheet is stale; manual backdated entry covers the need. |
-| **Deep historical backdating** | Backdating starts **July 2026**. This single cap dissolves the raw-OHLC problem, the deep-history argument, and the split reconciliation of long-past trades. |
+| **Deep historical backdating** | Backdating starts **July 2026**. This single cap dissolves the raw-OHLC problem, the deep-history argument, and the split reconciliation of long-past trades. **Superseded by [ADR 0008](docs/adr/0008-the-analytical-record-starts-18-august-2026.md)**: the analytical record now starts **18 August 2026**, per book, and the cap no longer governs what the broker exports sweep in. |
 | **EODHD and any paid bar source** | Ruled out in [#12](https://github.com/ajitimur/automatic-trading-journal/issues/12). yfinance is a permanent commitment, not a free tier to graduate from. The generic adapter *seam* stays; a second adapter does not. |
 | **Unconditional setup-selection analysis** | The journal records only Trades **taken**, never setups passed on, so "which setups work" is permanently conditional on the trader's own filter. No export shape lifts this; it ships as a legend caveat instead. |
 | **The inventory of parser correction rules** | The *mechanism* is specified ([§5.4](#54-corrections-a-fact-once-a-rule-forever)); the class list is not. Only writing the parsers can fill it, and a guessed inventory inside a locked spec would read as decided. |
@@ -84,7 +84,8 @@ Both earn their keystrokes because nothing else can supply them. The stop is gen
 
 - **`setup`** vocabulary: `base_breakout`, `high_tight_flag`, `other`. Accumulating `other` is the signal to name a third setup.
 - **`stop`** is immutable once set, and locks at freeze.
-- **`stop_provenance`** is **derived, never typed**: `recorded` if the stop arrived before the Trade's first Exit, `reconstructed` if after. No self-reported confidence scale.
+- **`stop_provenance`** is **derived, never typed**: `recorded` if the stop arrived before the Trade's first Exit **or within 3 trading days of entry**, `reconstructed` otherwise. No self-reported confidence scale. The grace window and its cost are [ADR 0009](docs/adr/0009-stops-are-never-backfilled.md); note that `recorded` therefore means *set while it was still early*, not *set before the outcome was known*.
+- **Stops are never backfilled** ([ADR 0009](docs/adr/0009-stops-are-never-backfilled.md)). Past the grace window a stop still lands as `reconstructed`, but no bulk or reconstruct-from-chart path exists.
 
 ### 3.3 Exit reasons — a fixed vocabulary
 
@@ -240,6 +241,10 @@ So: you are not re-confirming the same misparse — but only for the class of mi
 **Confirm demands nothing.** A Trade commits with no stop; Exposure Percentage is computed regardless, Risk Percentage and R are held open. On a busy day, demanding a stop is friction at exactly the wrong moment.
 
 **The nag lives in the daily job, not the confirm queue** — the queue is for decisions on new information, not a standing to-do list. It surfaces in the review surface's banner ([§11.4](#114-the-attention-banner)). Provenance falls out of *when* the stop arrives, not anything typed.
+
+> **This bet lost, and the reversal is recorded rather than papered over.** Over 207 Trades the chaseable path produced **zero** stops and froze 116 holes shut — the live risk §11.4 flagged, realized.
+>
+> **Confirm now demands the stop** ([ADR 0010](docs/adr/0010-confirm-demands-the-stop.md)): a new Trade commits only once answered with `--stop SYMBOL=PRICE` or `--no-stop SYMBOL`, the latter recording that the hole was chosen. What is demanded is an *answer*, not a stop — declining stays a keystroke, so §5.5's friction argument is bounded rather than dismissed, and an unanswered Trade is held rather than rejected, leaving §5.7's "the fills are facts" intact. A declined Trade is no longer nagged. [ADR 0009](docs/adr/0009-stops-are-never-backfilled.md) adds the 3-trading-day grace window and rules backfill out entirely.
 
 ### 5.6 Where the brokers differ
 
@@ -713,6 +718,8 @@ Off the stop **as recorded**, never re-derived. Three tiers rather than a single
 | absent | **excluded** (still fully present in % and ADR terms) | excluded |
 | `reconstructed` provenance | included | **excluded** |
 | recorded | included | included |
+
+> **`recorded` is a weaker claim than it was.** Under [ADR 0009](docs/adr/0009-stops-are-never-backfilled.md)'s grace window it means *set within 3 trading days of entry*, which on a fast Trade can be after the outcome is known. The tier table is unchanged; what it certifies is not.
 
 **Any aggregate reporting R must report its excluded count beside it**, or the number quietly means something different each week.
 

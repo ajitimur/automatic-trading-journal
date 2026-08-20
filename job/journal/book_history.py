@@ -43,6 +43,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from . import books
 from .counterfactual import realized_r
 
 # The marker the drawdown carries when the book has too few closed stop-bearing
@@ -104,8 +105,8 @@ def _exit_aggregates(
         "SELECT te.trade_id AS trade_id, MAX(te.exit_date) AS final_exit_date, "
         "SUM(te.price * te.quantity) AS notional, SUM(te.quantity) AS qty "
         "FROM trade_exit te JOIN trade t ON t.id = te.trade_id "
-        "WHERE t.book = ? GROUP BY te.trade_id",
-        (book,),
+        "WHERE t.book = ? AND t.entry_date >= ? GROUP BY te.trade_id",
+        (book, books.scope_start(conn, book)),
     ).fetchall()
     out: Dict[int, Tuple[str, Optional[float]]] = {}
     for r in rows:
@@ -121,10 +122,14 @@ def project(conn: sqlite3.Connection, book: str) -> BookHistory:
     Read-time only: reads the current Trade set and writes nothing, so a backdated
     Trade is reflected on the next call and drift never fires (ADR 0004).
     """
+    # Scoped to the Book's Scope Start (ADR 0008). The drawdown curve especially:
+    # a pre-boundary Trade left in would set the high-water mark that every new
+    # Trade is measured against, so the restart would inherit the old record's
+    # drawdown while showing none of its Trades.
     trades = conn.execute(
         "SELECT id, symbol, entry_date, entry_avg_price, status, stop "
-        "FROM trade WHERE book = ? ORDER BY entry_date, id",
-        (book,),
+        "FROM trade WHERE book = ? AND entry_date >= ? ORDER BY entry_date, id",
+        (book, books.scope_start(conn, book)),
     ).fetchall()
     exits = _exit_aggregates(conn, book)
 

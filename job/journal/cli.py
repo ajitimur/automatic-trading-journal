@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import backup, books, counterfactual, db, equity, export, fills, flex, flex_client, review, risk, secrets, stockbit, stops, trades
+from . import backup, books, counterfactual, db, doh, equity, export, fills, flex, flex_client, flex_transport, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -65,11 +65,40 @@ def _format_summary(result: RunResult, db_path: str) -> str:
     return "\n".join(lines)
 
 
+# The env seam that turns the nightly fetch off (§13.7): ``JOURNAL_BARS=off``.
+# It exists because the bar pass is the one part of ``run`` that touches the
+# network, and an integration test of the CLI must exercise the whole command
+# without a socket. Checking whether ``yfinance`` imports is not a substitute —
+# the adapter defers that import to the moment of a real fetch, by design, so
+# the package being absent stays invisible until the socket is opened.
+ENV_BARS = "JOURNAL_BARS"
+
+
+def _build_bar_cache(conn):
+    """Assemble the real bar cache, or ``None`` when bars are switched off.
+
+    A seam, like the Flex client's: the concrete fetcher is named only here, so
+    nothing above the composition root depends on yfinance (§4.4). ``None``
+    reaches the run as a *gated* bars pass — stated on the run record, never a
+    silent no-op — so an operator reads the reason off the banner instead of
+    wondering why the regime never stamped.
+    """
+    if os.environ.get(ENV_BARS, "").strip().lower() in {"off", "0", "false"}:
+        return None
+
+    from .bars import BarCache
+    from .yfinance_adapter import YFinanceFetcher
+
+    return BarCache(conn, YFinanceFetcher())
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
     try:
-        result = execute_run(conn, as_of=args.as_of)
+        result = execute_run(
+            conn, as_of=args.as_of, bar_cache=_build_bar_cache(conn)
+        )
     finally:
         conn.close()
     print(_format_summary(result, db_path))
@@ -144,6 +173,60 @@ def _format_proposal(p: trades.Proposal) -> str:
     return f"  {p.kind:<16}{park} {p.book} {p.symbol}  — {p.note}"
 
 
+def cmd_scope_start(args: argparse.Namespace) -> int:
+    """Show or move a Book's Scope Start (ADR 0008)."""
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        if args.date:
+            try:
+                datetime.strptime(args.date, "%Y-%m-%d")
+            except ValueError:
+                print(f"scope-start: {args.date!r} is not an ISO date", file=sys.stderr)
+                return 2
+            books.set_scope_start(conn, args.book, args.date)
+            held = conn.execute(
+                "SELECT COUNT(*) AS n FROM trade WHERE book = ? AND entry_date < ?",
+                (args.book, args.date),
+            ).fetchone()["n"]
+            print(
+                f"{args.book} Scope Start set to {args.date} — "
+                f"{held} earlier Trade(s) stay in the journal and stop counting"
+            )
+            return 0
+        for book in books.BOOKS:
+            start = books.scope_start(conn, book)
+            if start == books.NO_SCOPE_START:
+                print(f"{book}: no Scope Start — every Trade counts")
+            else:
+                held = conn.execute(
+                    "SELECT COUNT(*) AS n FROM trade WHERE book = ? AND entry_date < ?",
+                    (book, start),
+                ).fetchone()["n"]
+                print(f"{book}: {start}  ({held} earlier Trade(s) withheld)")
+    finally:
+        conn.close()
+    return 0
+
+
+def _parse_stop_args(pairs: Optional[Sequence[str]]) -> dict:
+    """``["AVGO=302", ...]`` → ``{"AVGO": 302.0}``, rejecting anything ambiguous."""
+    out: dict = {}
+    for raw in pairs or ():
+        symbol, sep, price = raw.partition("=")
+        if not sep or not symbol.strip():
+            raise ValueError(f"--stop expects SYMBOL=PRICE, got {raw!r}")
+        symbol = symbol.strip().upper()
+        try:
+            value = float(price)
+        except ValueError:
+            raise ValueError(f"--stop {symbol}: {price!r} is not a price") from None
+        if symbol in out and out[symbol] != value:
+            raise ValueError(f"--stop {symbol} given twice with different prices")
+        out[symbol] = value
+    return out
+
+
 def cmd_confirm(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
@@ -158,9 +241,44 @@ def cmd_confirm(args: argparse.Namespace) -> int:
                 for p in proposals:
                     print(_format_proposal(p))
             return 0
-        result = trades.confirm(conn)
+        try:
+            stops_by_symbol = _parse_stop_args(args.stop)
+        except ValueError as exc:
+            print(f"confirm failed: {exc}", file=sys.stderr)
+            return 2
+        try:
+            result = trades.confirm(
+                conn,
+                stops_by_symbol=stops_by_symbol,
+                declined=args.no_stop,
+                demand_stop=True,
+            )
+        except stops.StopAboveEntry as exc:
+            # Refuse the batch rather than land a Trade whose R would be inverted
+            # from the moment it commits. The Fills are untouched; fix the number
+            # and re-run.
+            print(f"confirm refused: {exc}", file=sys.stderr)
+            print("nothing committed — correct the stop and confirm again",
+                  file=sys.stderr)
+            return 1
     finally:
         conn.close()
+    # The demand, stated with the exact commands that answer it (ADR 0010).
+    if result.unanswered:
+        print(
+            f"{len(result.unanswered)} new Trade(s) held — each needs a stop or an "
+            "explicit decline before it commits:",
+            file=sys.stderr,
+        )
+        for held in result.unanswered:
+            print(f"  {held}", file=sys.stderr)
+        print(
+            "\n  --stop SYMBOL=PRICE   record the stop you were working to\n"
+            "  --no-stop SYMBOL      commit without one, accepting that this Trade\n"
+            "                        has no Risk % and no R once it freezes\n"
+            "\nTheir Fills are untouched; they re-propose on the next confirm.",
+            file=sys.stderr,
+        )
     extra = "".join(
         f", {n} {label}"
         for n, label in (
@@ -218,15 +336,35 @@ def cmd_stop(args: argparse.Namespace) -> int:
     conn = db.connect(db_path)
     try:
         provenance = stops.set_stop(conn, args.trade_id, args.price)
-    except (stops.UnknownTrade, stops.FrozenError) as exc:
-        # Setting a stop is an explicit operator action: a missing Trade or a
-        # frozen one is a refusal to surface, not something to swallow.
+    except (stops.UnknownTrade, stops.FrozenError, stops.StopAboveEntry) as exc:
+        # Setting a stop is an explicit operator action: a missing Trade, a frozen
+        # one, or a stop above entry is a refusal to surface, not to swallow.
         print(f"stop refused: {exc}", file=sys.stderr)
         return 1
     finally:
         conn.close()
     # Provenance is not typed — it falls out of when the stop arrived (SPEC §3.2).
     print(f"stop {args.price:g} set on Trade {args.trade_id}  (provenance: {provenance})")
+    return 0
+
+
+def cmd_no_stop(args: argparse.Namespace) -> int:
+    """Record a Trade as deliberately stop-less (ADR 0010)."""
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        for trade_id in args.trade_id:
+            stops.decline_stop(conn, trade_id)
+    except (stops.UnknownTrade, stops.FrozenError) as exc:
+        print(f"decline refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    ids = ", ".join(str(t) for t in args.trade_id)
+    print(
+        f"Trade(s) {ids} recorded as deliberately stop-less — "
+        "no Risk % and no R, permanently once frozen"
+    )
     return 0
 
 
@@ -312,6 +450,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         flex.FlexError,
         flex_client.InterceptionError,
         flex_client.EmptyResponseError,
+        flex_transport.TransportError,
+        doh.DohError,
         secrets.SecretNotFound,
     ) as exc:
         # The network path lies (SPEC §13.3): a Flex error body, DNS
@@ -378,6 +518,8 @@ def cmd_fetch_nav(args: argparse.Namespace) -> int:
         flex.FlexError,
         flex_client.InterceptionError,
         flex_client.EmptyResponseError,
+        flex_transport.TransportError,
+        doh.DohError,
         secrets.SecretNotFound,
     ) as exc:
         # The NAV XML joins the keep-forever tier only once it is captured; a
@@ -618,6 +760,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_argument(drop_p)
     drop_p.set_defaults(func=cmd_drop)
 
+    scope_p = sub.add_parser(
+        "scope-start",
+        help="show or move the date from which a Book's Trades count (ADR 0008)",
+    )
+    scope_p.add_argument("book", nargs="?", choices=list(books.BOOKS),
+                         help="the book to move; omit to show both")
+    scope_p.add_argument("date", nargs="?", help="ISO date, inclusive")
+    _add_db_argument(scope_p)
+    scope_p.set_defaults(func=cmd_scope_start)
+
     confirm_p = sub.add_parser(
         "confirm",
         help="derive Trades from Fills and commit them (the one confirm door)",
@@ -626,6 +778,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="show the proposals without committing anything",
+    )
+    confirm_p.add_argument(
+        "--stop",
+        action="append",
+        metavar="SYMBOL=PRICE",
+        help="the stop for a new Trade, repeatable (ADR 0010)",
+    )
+    confirm_p.add_argument(
+        "--no-stop",
+        action="append",
+        default=[],
+        metavar="SYMBOL",
+        help="commit this new Trade without a stop, accepting the permanent hole",
     )
     _add_db_argument(confirm_p)
     confirm_p.set_defaults(func=cmd_confirm)
@@ -656,6 +821,16 @@ def build_parser() -> argparse.ArgumentParser:
     stop_p.add_argument("price", type=float, help="the stop price")
     _add_db_argument(stop_p)
     stop_p.set_defaults(func=cmd_stop)
+
+    no_stop_p = sub.add_parser(
+        "no-stop",
+        help="record a committed Trade as deliberately stop-less (ADR 0010)",
+    )
+    no_stop_p.add_argument(
+        "trade_id", type=int, nargs="+", help="the Trade id(s) going without a stop"
+    )
+    _add_db_argument(no_stop_p)
+    no_stop_p.set_defaults(func=cmd_no_stop)
 
     setup_p = sub.add_parser(
         "setup",

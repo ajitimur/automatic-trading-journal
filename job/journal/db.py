@@ -16,9 +16,18 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
+-- Scope Start per book (ADR 0008): the date from which this Book's Trades count.
+-- Trades entered earlier stay stored and readable and their Exits still allocate
+-- — they simply enter no count, no aggregate and no export. Absent row means no
+-- boundary, which is the right default for a journal never restarted.
+CREATE TABLE IF NOT EXISTS book_scope (
+    book        TEXT PRIMARY KEY,
+    scope_start TEXT NOT NULL          -- ISO date, inclusive
+);
+
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
 -- last_processed_trading_date means the book has never been processed.
 CREATE TABLE IF NOT EXISTS book_cursor (
@@ -56,7 +65,7 @@ CREATE TABLE IF NOT EXISTS run_book (
 CREATE TABLE IF NOT EXISTS run_pass (
     run_id INTEGER NOT NULL REFERENCES run(id),
     book   TEXT NOT NULL,
-    name   TEXT NOT NULL,           -- 'regime' | 'counterfactual' | 'freeze'
+    name   TEXT NOT NULL,           -- 'intake' | 'regime' | 'counterfactual' | 'freeze'
     status TEXT NOT NULL,           -- 'ran' | 'gated' | 'error'
     detail TEXT,                    -- counts stamped/scored/frozen, or why gated
     PRIMARY KEY (run_id, book, name)
@@ -68,7 +77,7 @@ CREATE TABLE IF NOT EXISTS run_pass (
 CREATE TABLE IF NOT EXISTS run_nag (
     run_id INTEGER NOT NULL REFERENCES run(id),
     book   TEXT NOT NULL,
-    kind   TEXT NOT NULL,           -- 'missing_stop' | 'missing_setup' | 'idx_equity' | 'idx_intake'
+    kind   TEXT NOT NULL,           -- 'missing_stop' | 'missing_setup' | 'us_intake' | 'idx_equity' | 'idx_intake'
     detail TEXT NOT NULL,           -- the stated fact
     PRIMARY KEY (run_id, book, kind)
 );
@@ -123,6 +132,7 @@ CREATE TABLE IF NOT EXISTS trade (
     frozen          INTEGER NOT NULL DEFAULT 0,     -- 1 once the freeze fuse locks the hand-entered fields
     reviewed_at     TEXT,                           -- review-surface stamp (#40), NULL until *Reviewed →*
     note            TEXT,                           -- review-surface free-text note (#40), not freeze-locked
+    stop_declined   INTEGER NOT NULL DEFAULT 0,     -- confirm asked for a stop and the trader declined (ADR 0010)
     UNIQUE (book, symbol, entry_date)
 );
 
@@ -472,6 +482,38 @@ def default_db_path() -> str:
     )
 
 
+def record_raw_document(
+    conn: sqlite3.Connection, *, book: str, kind: str, fetched_at: str, content: str
+) -> int:
+    """Record a raw source document in the keep-forever tier, returning its id.
+
+    The DB half of SPEC §13.5's raw tier, beside ``backup.archive_raw``'s
+    filesystem half. Every intake path writes here, which is what makes "when
+    did this book last receive anything" a question the store can answer —
+    without it the IDX intake nag reads an empty table and reports a forgotten
+    drop that never happened.
+
+    Deduped on ``(book, kind, content)``, matching the content-addressing of the
+    filesystem archive: re-capturing an identical document returns the existing
+    row rather than adding one, so the rolling-365 NAV window's overlapping
+    fetches and a re-dropped TC both stay flat. ``fetched_at`` therefore dates
+    the document's *first* arrival, which is what an intake nag should report —
+    re-dropping August's TC in September does not make the book's data current.
+    """
+    existing = conn.execute(
+        "SELECT id FROM raw_document WHERE book = ? AND kind = ? AND content = ?",
+        (book, kind, content),
+    ).fetchone()
+    if existing is not None:
+        return int(existing["id"])
+    cur = conn.execute(
+        "INSERT INTO raw_document (book, kind, fetched_at, content) VALUES (?, ?, ?, ?)",
+        (book, kind, fetched_at, content),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
 def connect(db_path: str) -> sqlite3.Connection:
     """Open (creating if absent) the SQLite file and apply the schema.
 
@@ -534,6 +576,9 @@ _TRADE_COLUMNS = {
     # non-destructive ALTER; neither is locked by freeze (SPEC §11.3).
     "reviewed_at": "TEXT",
     "note": "TEXT",
+    # The stop demanded at confirm, answered either way (ADR 0010). 1 means the
+    # trader was asked and chose the permanent hole; the nag then leaves it alone.
+    "stop_declined": "INTEGER NOT NULL DEFAULT 0",
 }
 
 

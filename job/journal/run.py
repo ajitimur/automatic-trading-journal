@@ -3,11 +3,19 @@
 Every run is *"for each book, advance from ``last_processed_trading_date`` to
 the present"* — not "process today". So a missed day is not an error, and a run
 that catches up several days records that it did (§13.1). Advancing moves the
-per-book cursor to the run's as-of date; then, **per book**, the enrichment
-passes run — regime, counterfactual, freeze — each **gating on whether that
-book's prior trading day has actually closed** (§13.3), read from the benchmark
-bar cache rather than trusting the clock. **The job enriches but never commits a
-Trade**, and it carries the nags (§11.4) as stated facts on the run record.
+per-book cursor to the run's as-of date; then, **per book**, the passes run.
+
+**Intake runs first and is never gated**: it pulls the broker's own trade export
+into the Fill ledger (§4.1, US only — the IDX TC is hand-dropped by design,
+§13.2). Fills are facts about what the trader did and do not depend on the bar
+series having caught up. The **enrichment** passes — regime, counterfactual,
+freeze — then run, each **gating on whether that book's prior trading day has
+actually closed** (§13.3), read from the benchmark bar cache rather than
+trusting the clock.
+
+**The job enriches but never commits a Trade** — appending Fills is not
+committing, since the confirm queue remains the only thing that derives a Trade
+(§5.1) — and it carries the nags (§11.4) as stated facts on the run record.
 
 Errors are recorded as data, not raised (§13.6): a book that fails advancing is
 written to its ``run_book`` row with ``status='error'``, a pass that fails is
@@ -22,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from . import backup, books, counterfactual, nags, post_exit, regime
+from . import backup, bar_sync, books, counterfactual, fills, flex_client, nags, post_exit, regime
 
 
 @dataclass
@@ -38,7 +46,7 @@ class BookOutcome:
 @dataclass
 class PassOutcome:
     book: str
-    name: str    # 'regime' | 'counterfactual' | 'freeze'
+    name: str    # 'intake' | 'regime' | 'counterfactual' | 'freeze'
     status: str  # 'ran' | 'gated' | 'error'
     detail: Optional[str] = None
 
@@ -157,6 +165,37 @@ def _pass_freeze(conn, book: str, as_of: str) -> str:
     return f"{in_book} Trade(s) frozen"
 
 
+def _pass_intake(conn, book: str, as_of: str) -> str:
+    """Pull the broker's own trade export into the Fill ledger (SPEC §4.1).
+
+    US only. §4.1 specifies the Activity Flex Query "runs unattended: no browser,
+    no 2FA" — that is the whole reason IBKR is treated differently from Stockbit,
+    whose TC is deliberately hand-dropped (§13.2). Until this pass existed the
+    unattended half was specified and never wired, so the US ledger silently went
+    stale between manual `journal fetch` runs.
+
+    **This does not breach the one-door rule** (SPEC §5.1). It appends *Fills*,
+    which are facts from the broker; no Trade is derived and nothing is committed
+    — the confirm queue remains the only thing that creates a Trade, and it will
+    now demand a stop for each one (ADR 0010).
+
+    Ungated, unlike the enrichment passes: a fetch does not depend on the prior
+    close having landed, and a book whose bars are late still wants its fills.
+    """
+    if book != books.US:
+        return "not applicable — the IDX TC is hand-dropped (SPEC §13.2)"
+    query_id = flex_client.default_query_id()
+    if not query_id:
+        return (
+            "skipped — no Flex query id configured "
+            f"(set {flex_client.QUERY_ID_ENV})"
+        )
+    client = flex_client.build_default_client()
+    statement = client.fetch_statement(query_id)
+    inserted = fills.import_flex_text(conn, statement)
+    return f"{inserted} new fill(s) from Flex query {query_id}"
+
+
 _PASSES = (
     ("regime", _pass_regime),
     ("counterfactual", _pass_counterfactual),
@@ -194,14 +233,56 @@ def _prior_close_landed(conn, book: str, as_of: str) -> bool:
     return row is not None
 
 
-def _run_book_passes(conn, book: str, as_of: str) -> list[PassOutcome]:
-    """Run (or gate) every enrichment pass for one book on this run."""
+def _pass_bars(conn, book: str, as_of: str, cache) -> PassOutcome:
+    """Fill the bar cache for the book — the pass every other pass reads from.
+
+    Runs *before* the gate rather than under it: the gate asks whether the
+    book's benchmark has a bar older than ``as_of`` (§13.3), and on a fresh
+    machine nothing can ever satisfy that until something fetches. Gating the
+    fetch on the gate's own precondition is what kept every pass dark.
+
+    A missing fetcher is stated, not assumed away: the cache is injected by the
+    composition root, and a caller that wires none (every test that does not
+    want a socket) gets a gated pass rather than a silent no-op.
+    """
+    if cache is None:
+        return PassOutcome(book, "bars", "gated", "no bar fetcher configured")
+    try:
+        result = bar_sync.sync_book(conn, book, as_of, cache)
+    except Exception as exc:  # a fetch failing must not sink the run (§13.6)
+        return PassOutcome(book, "bars", "error", str(exc))
+    detail = result.summary()
+    if result.errors:
+        named = "; ".join(f"{o.symbol}: {o.detail}" for o in result.errors[:3])
+        more = "" if len(result.errors) <= 3 else f" (+{len(result.errors) - 3} more)"
+        return PassOutcome(book, "bars", "error", f"{detail} — {named}{more}")
+    return PassOutcome(book, "bars", "ran", detail)
+
+
+def _run_book_passes(conn, book: str, as_of: str, cache=None) -> list[PassOutcome]:
+    """Run (or gate) every pass for one book on this run.
+
+    **Two passes run before the gate and are never subject to it**, for the same
+    underlying reason: the gate is about whether enrichment can trust the bar
+    series, and neither of these depends on that.
+
+    *Bars* must precede it because the gate asks whether the benchmark has a bar
+    older than ``as_of`` — gating the fetch on the gate's own precondition is
+    what kept every pass dark on a fresh machine. *Intake* must precede it
+    because fills are facts about what the trader did; a book whose market data
+    is late still wants its trades (§4.1).
+    """
+    outcomes: list[PassOutcome] = [_pass_bars(conn, book, as_of, cache)]
+    try:
+        outcomes.append(PassOutcome(book, "intake", "ran", _pass_intake(conn, book, as_of)))
+    except Exception as exc:  # the network path lies (§13.3) — record, never raise
+        outcomes.append(PassOutcome(book, "intake", "error", str(exc)))
     if not _prior_close_landed(conn, book, as_of):
-        return [
+        outcomes.extend(
             PassOutcome(book, name, "gated", "prior trading day not yet closed")
             for name, _ in _PASSES
-        ]
-    outcomes: list[PassOutcome] = []
+        )
+        return outcomes
     for name, fn in _PASSES:
         try:
             detail = fn(conn, book, as_of)
@@ -211,11 +292,13 @@ def _run_book_passes(conn, book: str, as_of: str) -> list[PassOutcome]:
     return outcomes
 
 
-def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
+def execute_run(conn, as_of: Optional[str] = None, bar_cache=None) -> RunResult:
     """Run the daily job against an open connection and return the result.
 
     ``as_of`` defaults to today (UTC date). It is injectable so tests and
-    backfill can pin the frontier deterministically.
+    backfill can pin the frontier deterministically. ``bar_cache`` is the market
+    data seam (§4.4): the CLI wires the real one, and a caller that passes none
+    gets a gated bars pass instead of a socket.
     """
     as_of = as_of or datetime.now(timezone.utc).date().isoformat()
     # Validate shape early — an unparseable as-of is a caller bug, not run data.
@@ -254,7 +337,7 @@ def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
         # trading day having closed (§13.3). A book that errored advancing is not
         # enriched — there is no fresh frontier to enrich against.
         book_passes = (
-            _run_book_passes(conn, book, as_of)
+            _run_book_passes(conn, book, as_of, bar_cache)
             if outcome.status != "error"
             else []
         )
@@ -268,7 +351,7 @@ def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
 
     # The nags ride the same run (§11.4): stated facts, recorded then read off the
     # banner on next open. Gathered once over the enriched store, not per book.
-    run_nags = nags.gather(conn)
+    run_nags = nags.gather(conn, as_of)
     for n in run_nags:
         conn.execute(
             "INSERT INTO run_nag (run_id, book, kind, detail) VALUES (?, ?, ?, ?)",

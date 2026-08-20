@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from datetime import date, timedelta
 
-from journal import cli, db, export
+from journal import books, cli, db, export
 
 
 def _bars(conn, book, symbol, start, days, close=10.0):
@@ -286,6 +286,28 @@ class ExportTest(unittest.TestCase):
         self.assertNotIn("IDX", export.export(self.conn, book="US")
                          .split("# One JSON object")[1])
 
+
+    # ── Scope Start bounds the export and is declared in the header (ADR 0008) ──
+    def test_scope_start_withholds_earlier_trades_and_says_so(self):
+        self._trade(tid=1, book="US", symbol="OLD", entry="2026-04-20",
+                    exit_date="2026-05-01", exits=[("2026-05-01", 1000, 120.0, "x")])
+        self._trade(tid=2, book="US", symbol="NEW", entry="2026-08-20",
+                    exit_date="2026-08-25", exits=[("2026-08-25", 1000, 120.0, "x")])
+        books.set_scope_start(self.conn, "US", "2026-08-18")
+
+        text = export.export(self.conn, book="US")
+        rows = self._lines(text)
+        self.assertEqual([r["symbol"] for r in rows], ["NEW"])
+        # Stated, never silent: a reader must know the record begins at a boundary.
+        self.assertIn("US Scope Start 2026-08-18", text)
+        self.assertIn("1 earlier Trade(s)", text)
+
+    def test_no_scope_start_ships_everything_and_says_nothing(self):
+        self._trade(tid=1, book="US", symbol="OLD", entry="2026-04-20",
+                    exit_date="2026-05-01", exits=[("2026-05-01", 1000, 120.0, "x")])
+        text = export.export(self.conn, book="US")
+        self.assertEqual([r["symbol"] for r in self._lines(text)], ["OLD"])
+        self.assertNotIn("Scope Start", text)
 
     def test_cli_export_writes_a_file_for_one_book(self):
         self._trade(tid=1, book="US", symbol="AAA", entry="2026-04-20",

@@ -86,6 +86,80 @@ class StopsTest(unittest.TestCase):
             stops.annotations(self.conn, trade_id)["stop_provenance"], "reconstructed"
         )
 
+    def _bars(self, dates, symbol="AAA", book="US"):
+        """Cache trading days for the symbol, so the grace window can be counted."""
+        for d in dates:
+            self.conn.execute(
+                "INSERT INTO bar (book, symbol, date, open, high, low, close, volume) "
+                "VALUES (?, ?, ?, 10, 11, 9, 10, 1000)",
+                (book, symbol, d),
+            )
+        self.conn.commit()
+
+    # ── The grace window: a stop set soon after entry is 'recorded' (ADR 0009) ──
+    def test_stop_inside_the_grace_window_is_recorded(self):
+        trade_id = self._open_trade()  # entered 2026-08-03
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"])
+        # Three trading days after entry — inside the window despite the Exit.
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-06"),
+            stops.RECORDED,
+        )
+
+    # ── Past the window the stop is reconstructed, exits or not ──
+    def test_stop_past_the_grace_window_is_reconstructed(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"])
+        # Four trading days after entry — one past the window.
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-07"),
+            stops.RECONSTRUCTED,
+        )
+
+    # ── The window counts trading days, so a suspension stretches it ──
+    def test_grace_window_counts_trading_days_not_calendar_days(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        # The symbol traded on only two days in the fortnight after entry.
+        self._bars(["2026-08-04", "2026-08-14"])
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-17"),
+            stops.RECORDED,  # 11 calendar days, but only 2 trading days
+        )
+
+    # ── The accepted cost: inside the window, a closed Trade still reads recorded ──
+    def test_grace_window_certifies_a_closed_trade(self):
+        """Deliberate (ADR 0009): the outcome is visible and it still says recorded.
+
+        Without this the window buys nothing on a book where Trades routinely
+        open and close within days — but it does mean `recorded` no longer
+        promises an uncontaminated stop.
+        """
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM trade WHERE id = ?", (trade_id,)
+            ).fetchone()["status"],
+            "closed",
+        )
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-05"),
+            stops.RECORDED,
+        )
+
+    # ── With no bars cached the window cannot be counted, so the strict rule holds ──
+    def test_uncountable_window_falls_back_to_the_strict_rule(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-04"),
+            stops.RECONSTRUCTED,
+        )
+
     # ── Acceptance: stop and setup are editable until freeze ──
     def test_stop_and_setup_editable_until_freeze(self):
         trade_id = self._open_trade()
@@ -136,3 +210,119 @@ class StopsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopAboveEntryTest(unittest.TestCase):
+    """A stop at or above entry is impossible on a long, and fails loudly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _trade(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "FPNI", 100, 458.0, "2026-08-19T09:30:00-04:00"),
+        ])
+        trades.confirm(self.conn)
+        return self.conn.execute("SELECT id FROM trade").fetchone()["id"]
+
+    def test_a_fat_fingered_decimal_is_refused(self):
+        """The real case: 430 typed as 4300 on a Rp458 entry."""
+        tid = self._trade()
+        with self.assertRaises(stops.StopAboveEntry):
+            stops.set_stop(self.conn, tid, 4300.0)
+        self.assertIsNone(
+            self.conn.execute("SELECT stop FROM trade").fetchone()["stop"]
+        )
+
+    def test_a_stop_equal_to_entry_is_refused(self):
+        # Not merely wrong — (entry − stop) is zero, so R divides by zero.
+        tid = self._trade()
+        with self.assertRaises(stops.StopAboveEntry):
+            stops.set_stop(self.conn, tid, 458.0)
+
+    def test_a_stop_below_entry_is_accepted(self):
+        tid = self._trade()
+        self.assertEqual(stops.set_stop(self.conn, tid, 430.0), stops.RECORDED)
+
+    def test_confirm_refuses_before_committing_anything(self):
+        """The batch must be atomic: set_stop commits, so validate up front."""
+        fills.insert_fills(self.conn, [
+            _buy("b1", "AAA", 100, 100.0, "2026-08-19T09:30:00-04:00"),
+            _buy("b2", "BBB", 100, 200.0, "2026-08-19T09:30:00-04:00"),
+        ])
+        with self.assertRaises(stops.StopAboveEntry):
+            trades.confirm(
+                self.conn,
+                stops_by_symbol={"AAA": 90.0, "BBB": 900.0},  # BBB is the bad one
+                demand_stop=True,
+            )
+        # AAA's stop was fine, but nothing lands while the batch contains a bad one.
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 0
+        )
+
+
+class DeclineStopTest(unittest.TestCase):
+    """Answering the stop question on an already-committed Trade (ADR 0010)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _trade(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "BRMS", 100, 650.0, "2026-08-18T09:30:00-04:00"),
+        ])
+        trades.confirm(self.conn)
+        return self.conn.execute("SELECT id FROM trade").fetchone()["id"]
+
+    def test_declining_records_the_choice_without_deleting_anything(self):
+        tid = self._trade()
+        stops.decline_stop(self.conn, tid)
+        row = self.conn.execute(
+            "SELECT stop, stop_declined FROM trade WHERE id = ?", (tid,)
+        ).fetchone()
+        self.assertIsNone(row["stop"])
+        self.assertEqual(row["stop_declined"], 1)
+        # The Trade and its Fills are untouched — a decline is not a deletion.
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 1
+        )
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"], 1
+        )
+
+    def test_a_declined_trade_is_no_longer_nagged(self):
+        from journal import nags
+        tid = self._trade()
+        before = [n for n in nags.gather(self.conn, "2026-08-20") if n.kind == "missing_stop"]
+        self.assertTrue(before)
+
+        stops.decline_stop(self.conn, tid)
+        after = [n for n in nags.gather(self.conn, "2026-08-20") if n.kind == "missing_stop"]
+        self.assertFalse(after, "an answered question must stop being asked")
+
+    def test_a_stop_later_clears_the_decline(self):
+        tid = self._trade()
+        stops.decline_stop(self.conn, tid)
+        stops.set_stop(self.conn, tid, 630.0)
+        row = self.conn.execute(
+            "SELECT stop, stop_declined FROM trade WHERE id = ?", (tid,)
+        ).fetchone()
+        self.assertEqual(row["stop"], 630.0)
+        self.assertEqual(row["stop_declined"], 0)
+
+    def test_declining_after_freeze_is_refused(self):
+        tid = self._trade()
+        stops.freeze(self.conn, tid)
+        with self.assertRaises(stops.FrozenError):
+            stops.decline_stop(self.conn, tid)

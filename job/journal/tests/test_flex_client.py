@@ -64,9 +64,11 @@ class _FakeTransport:
         self._queues = {"SendRequest": list(send_bodies), "GetStatement": list(get_bodies)}
         self._ip_for_host = ip_for_host
         self.urls = []
+        self.addresses = []
 
-    def get(self, url):
+    def get(self, url, addresses):
         self.urls.append(url)
+        self.addresses.append(list(addresses))
         key = "SendRequest" if "SendRequest" in url else "GetStatement"
         body = self._queues[key].pop(0)
         host = SEND_HOST if key == "SendRequest" else GET_HOST

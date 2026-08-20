@@ -35,6 +35,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Sequence
 
+from . import db
+
 # IBKR is the US book; IDX is hand-typed. Sources name the mechanism, not just
 # the broker, so a row's origin is legible without a join.
 BOOK_US = "US"
@@ -169,12 +171,15 @@ def _write_snapshot(
 def _store_raw_document(
     conn: sqlite3.Connection, *, book: str, kind: str, fetched_at: str, content: str
 ) -> int:
-    """Persist a raw source document to the keep-forever tier, returning its id."""
-    cur = conn.execute(
-        "INSERT INTO raw_document (book, kind, fetched_at, content) VALUES (?, ?, ?, ?)",
-        (book, kind, fetched_at, content),
+    """Persist a raw source document to the keep-forever tier, returning its id.
+
+    Delegates to the shared writer so every intake path lands in one table the
+    same way — the IDX drop path had its own arrangement and the intake nag went
+    blind as a result (SPEC §11.4).
+    """
+    return db.record_raw_document(
+        conn, book=book, kind=kind, fetched_at=fetched_at, content=content
     )
-    return int(cur.lastrowid)
 
 
 def import_nav_flex_text(

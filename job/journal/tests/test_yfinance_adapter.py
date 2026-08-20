@@ -43,7 +43,7 @@ class YFinanceAdapterTest(unittest.TestCase):
             [RuntimeError("429"), RuntimeError("429"), bars],
             retries=3, backoff=1.0, sleep=sleeper,
         )
-        got = fetcher.fetch("AAA", "2026-07-01", "2026-07-01")
+        got = fetcher.fetch("US", "AAA", "2026-07-01", "2026-07-01")
         self.assertEqual(got, bars)
         self.assertEqual(fetcher.download_calls, 3)
         self.assertEqual(sleeps, [1.0, 2.0])  # exponential: 1, 2
@@ -54,7 +54,7 @@ class YFinanceAdapterTest(unittest.TestCase):
             [RuntimeError("boom")] * 3, retries=3, backoff=0.5, sleep=sleeper,
         )
         with self.assertRaises(RuntimeError):
-            fetcher.fetch("AAA", "2026-07-01", "2026-07-01")
+            fetcher.fetch("US", "AAA", "2026-07-01", "2026-07-01")
         self.assertEqual(fetcher.download_calls, 3)
 
     def test_reads_unadjusted_with_actions(self):
@@ -64,6 +64,20 @@ class YFinanceAdapterTest(unittest.TestCase):
         source = inspect.getsource(yfinance_adapter)
         self.assertIn("auto_adjust=False", source)
         self.assertIn("actions=True", source)
+
+
+class VendorSymbolTest(unittest.TestCase):
+    def test_idx_equities_take_the_jakarta_suffix(self):
+        self.assertEqual(yfinance_adapter.vendor_symbol("IDX", "ADRO"), "ADRO.JK")
+
+    def test_us_equities_are_passed_through_bare(self):
+        self.assertEqual(yfinance_adapter.vendor_symbol("US", "AMD"), "AMD")
+
+    def test_index_tickers_are_never_suffixed(self):
+        # ^JKSE.JK is not a security. The benchmark already arrives in Yahoo's
+        # own form, and suffixing it would silently request nothing.
+        self.assertEqual(yfinance_adapter.vendor_symbol("IDX", "^JKSE"), "^JKSE")
+        self.assertEqual(yfinance_adapter.vendor_symbol("US", "QQQ"), "QQQ")
 
 
 if __name__ == "__main__":

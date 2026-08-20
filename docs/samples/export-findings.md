@@ -58,8 +58,17 @@ sell cost = gross − 0.15% − 0.10% income tax
 - The document's own `Total Fee : 0.1500 % All In` **excludes stamp duty and income tax**.
   The 0.15% bundle decomposes into Commission + V.A.T Commission + IDX Fee + V.A.T Levy, and
   sums to exactly 0.150000% on both sides.
-- **Stamp duty is buy-side only** and **flat Rp10,000 per document** — not per trade, not
-  proportional. A day with six buys still pays Rp10,000 once.
+- **Stamp duty is flat Rp10,000 per document** — not per trade, not proportional. A day
+  with six buys still pays Rp10,000 once.
+- **Corrected after dropping real statements.** This originally said stamp duty is
+  **buy-side only**, generalising from the single sample below, which happened to be
+  buy-side. It is printed in **both** columns and is charged on sell documents too. It is
+  also *usually zero*: only 3 of 34 statements from 1 July – 18 Aug 2026 carried it, and
+  all three were sells. The parser had encoded the wrong rule as `_STAMP_DUTY` applied
+  when any buy row was present, so those three quarantined with a message blaming a
+  shifted column. It now reads the printed `Stamp Duty` line and refuses to parse a
+  document that does not print one. **The lesson generalises: a fee that is zero on most
+  documents cannot be characterised from one sample.**
 - **Income tax is sell-side only**, exactly 0.100% of sale proceeds.
 - `Total Cost` and `Payment due to you` both reconcile exactly.
 

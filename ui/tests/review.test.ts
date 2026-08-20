@@ -266,6 +266,78 @@ test('readReview scopes the week and derives R from stored primitives', withDb((
   assert.ok(state.banner.some((b) => b.kind === 'insufficient_history' && b.title.includes('SMCI')));
 }));
 
+// ── Scope Start bounds the counts but never the lists (ADR 0008, SPEC §11.3) ──
+test('a pre-boundary Trade leaves the counts and stays in the list', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-12']);
+
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    INSERT INTO trade (id, book, symbol, entry_date, entry_qty, entry_avg_price, status, stop, stop_provenance, frozen)
+    VALUES (1,'US','OLD','2026-07-31',60,318.4,'closed',302,'recorded',0),
+           (2,'US','NEW','2026-08-03',60,318.4,'closed',302,'recorded',0),
+           (3,'US','HELD','2026-07-20',22,742.1,'open',null,null,0);
+    INSERT INTO trade_exit (id, trade_id, source, source_ref, exit_date, quantity, price, reason)
+    VALUES (11,1,'ibkr','s1','2026-08-05',60,341.9,'close_below_ma10'),
+           (12,2,'ibkr','s2','2026-08-06',60,341.9,'close_below_ma10');
+    INSERT INTO trade_exit_geometry (trade_id, book, symbol, exit_date, bar_date, exit_avg_price)
+    VALUES (1,'US','OLD','2026-08-05','2026-08-05',341.9),
+           (2,'US','NEW','2026-08-06','2026-08-06',341.9);
+  `);
+  db.close();
+
+  const before = readReview(dbPath, { asOf: '2026-08-12' });
+  assert.equal(before.counts.find((c) => c.book === 'US')!.closed, 2);
+
+  const db2 = new DatabaseSync(dbPath);
+  db2.exec(`INSERT INTO book_scope (book, scope_start) VALUES ('US','2026-08-01');`);
+  db2.close();
+
+  const after = readReview(dbPath, { asOf: '2026-08-12' });
+  // The count drops to the one Trade inside the record.
+  assert.equal(after.counts.find((c) => c.book === 'US')!.closed, 1);
+  // But OLD is still readable, and HELD — a position entered before the boundary
+  // and still open — must not vanish from the surface used to manage it.
+  const listed = [...after.weekTrades, ...after.stragglers, ...after.openTrades]
+    .map((t) => t.symbol);
+  assert.ok(listed.includes('OLD'), 'a pre-boundary Trade stays readable');
+  assert.ok(listed.includes('HELD'), 'an open pre-boundary position stays visible');
+}));
+
+// ── the intake banner answers "did I drop a TC", not "did bars arrive" ──
+test('the IDX intake banner reads the drop, not the bar cache', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
+
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    -- Bars keep arriving from Yahoo whether or not a TC was ever dropped, which
+    -- is why they cannot answer the intake question (SPEC §13.2).
+    INSERT INTO bar (book, symbol, date, open, high, low, close, volume)
+    VALUES ('IDX','^JKSE','2026-08-18',10,11,9,10,1000),
+           ('IDX','^JKSE','2026-08-19',10,11,9,10,1000),
+           ('IDX','^JKSE','2026-08-20',10,11,9,10,1000);
+  `);
+  db.close();
+
+  const before = readReview(dbPath, { asOf: '2026-08-20' });
+  const noDrop = before.banner.find((b) => b.kind === 'idx_intake');
+  assert.ok(noDrop, 'intake is a stated fact even when it never happened');
+  assert.match(noDrop.body, /no drop recorded/);
+
+  // Now a TC actually lands, two IDX trading days back.
+  const db2 = new DatabaseSync(dbPath);
+  db2.exec(`
+    INSERT INTO raw_document (book, kind, fetched_at, content)
+    VALUES ('IDX','stockbit-tc','2026-08-18T02:00:00+00:00','<tc>');
+  `);
+  db2.close();
+
+  const after = readReview(dbPath, { asOf: '2026-08-20' });
+  const drop = after.banner.find((b) => b.kind === 'idx_intake');
+  assert.ok(drop);
+  assert.match(drop.body, /last drop 2026-08-18/);
+  assert.match(drop.body, /\(2 trading days ago\)/);
+}));
+
 // ── the write-through door: a POST shells the CLI and the store changes ──
 test('an action POST writes straight through the CLI door', withDb(async (dbPath) => {
   journal(dbPath, ['run', '--as-of', '2026-08-12']);
@@ -277,7 +349,9 @@ test('an action POST writes straight through the CLI door', withDb(async (dbPath
     "symbol='AAA',side='BUY',quantity=100.0,price=10.0,commission=0.0," +
     "executed_at='2026-08-03T09:30:00-04:00',order_id='o1')]); c.close()";
   execFileSync('python3', ['-c', py], { cwd: JOB_DIR, env: { ...process.env, PYTHONPATH: JOB_DIR }, stdio: 'pipe' });
-  journal(dbPath, ['confirm']);
+  // Confirm demands the stop now (ADR 0010); this test is about the POST door,
+  // so it declines and supplies the stop through the surface below.
+  journal(dbPath, ['confirm', '--no-stop', 'AAA']);
   const tradeId = readReview(dbPath, { asOf: '2026-08-12' }).openTrades[0]!.id;
 
   const ui = await startServer(dbPath, 0);

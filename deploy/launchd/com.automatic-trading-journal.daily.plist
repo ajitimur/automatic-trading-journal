@@ -32,6 +32,12 @@
         <string>__DATA__/journal.db</string>
         <key>JOURNAL_SECRET_IBKR_FLEX_TOKEN</key>
         <string>__SET_AT_INSTALL__</string>
+        <!-- The saved Activity Flex Query the run fetches unattended (SPEC
+             §4.1). Config, not a secret: it names a report, it does not
+             authorise one. Unset means the intake pass states that it is
+             skipped rather than failing. -->
+        <key>JOURNAL_IBKR_FLEX_QUERY_ID</key>
+        <string>__SET_AT_INSTALL__</string>
         <!-- Durability (SPEC §13.5): every successful run leaves a VACUUM INTO
              snapshot beside the DB, and an off-machine copy here. Point this at
              a durable, ideally encrypted, volume so at least one DB copy lands

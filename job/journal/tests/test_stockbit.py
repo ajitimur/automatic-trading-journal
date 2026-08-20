@@ -23,6 +23,7 @@ SAMPLES = os.path.join(
 )
 GOOD = os.path.join(SAMPLES, "stockbit-tc-fixture.txt")
 SHIFTED = os.path.join(SAMPLES, "stockbit-tc-column-shift-fixture.txt")
+SELL_STAMP = os.path.join(SAMPLES, "stockbit-tc-sell-stamp-duty-fixture.txt")
 
 
 def _read(path: str) -> str:
@@ -80,6 +81,42 @@ class FeeGateTest(unittest.TestCase):
         with self.assertRaises(stockbit.QuarantineError):
             stockbit.parse_tc_text(_read(SHIFTED))
 
+    def test_stamp_duty_on_a_sell_document_reconciles(self):
+        # The sample set only ever showed stamp duty in the buy column, and the
+        # parser inferred it from the side. Real statements charge it on sells
+        # too — three of thirty-four from July-August 2026 — and inferring it
+        # away quarantined every one of them.
+        fills = stockbit.parse_tc_text(_read(SELL_STAMP))
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0].quantity, -8_400.0)
+
+    def test_a_zero_stamp_duty_column_is_read_as_zero_not_assumed(self):
+        # Most documents print a bare ``0`` rather than ``0.00``; reading the
+        # line has to cope with both, or every ordinary day would quarantine.
+        text = _read(SELL_STAMP).replace(
+            "Stamp Duty                                     0          10,000.00",
+            "Stamp Duty                                     0                  0",
+        ).replace(
+            "Total Cost                                  0.00      20,937,500.00",
+            "Total Cost                                  0.00      20,947,500.00",
+        ).replace(
+            "Payment due to you IDR                      0.00      20,937,500.00",
+            "Payment due to you IDR                      0.00      20,947,500.00",
+        )
+        fills = stockbit.parse_tc_text(text)
+        self.assertEqual(len(fills), 1)
+
+    def test_an_unstated_stamp_duty_is_never_assumed_to_be_zero(self):
+        # The charge is a stated fact. A document that prints no line at all is
+        # not silently treated as unstamped — that is the failure this whole
+        # change came from.
+        text = "\n".join(
+            line for line in _read(SELL_STAMP).splitlines()
+            if "Stamp Duty" not in line
+        )
+        with self.assertRaises(stockbit.StockbitError):
+            stockbit.parse_tc_text(text)
+
 
 class LedgerTest(unittest.TestCase):
     def setUp(self):
@@ -109,6 +146,34 @@ class LedgerTest(unittest.TestCase):
         with self.assertRaises(stockbit.QuarantineError):
             fills.import_stockbit_file(self.conn, SHIFTED)
         self.assertEqual(self._count(), 0)
+
+    def _raw_docs(self):
+        return self.conn.execute(
+            "SELECT book, kind, fetched_at FROM raw_document WHERE kind = 'stockbit-tc'"
+        ).fetchall()
+
+    # ── A drop records itself, so the intake nag has something to read (§11.4) ──
+    def test_dropping_a_tc_records_it_in_the_keep_forever_tier(self):
+        fills.import_stockbit_file(self.conn, GOOD, fetched_at="2026-08-18T02:00:00+00:00")
+        (doc,) = self._raw_docs()
+        self.assertEqual(doc["book"], "IDX")
+        self.assertEqual(doc["fetched_at"], "2026-08-18T02:00:00+00:00")
+
+    # ── Re-dropping the same TC does not invent a second intake ──
+    def test_re_dropping_the_same_tc_records_one_document(self):
+        fills.import_stockbit_file(self.conn, GOOD, fetched_at="2026-08-18T02:00:00+00:00")
+        fills.import_stockbit_file(self.conn, GOOD, fetched_at="2026-09-01T02:00:00+00:00")
+        (doc,) = self._raw_docs()
+        # Dated to its first arrival: re-dropping August's TC in September does
+        # not make the book's data current.
+        self.assertEqual(doc["fetched_at"], "2026-08-18T02:00:00+00:00")
+
+    # ── A quarantined drop still counts as intake: dropped, not forgotten ──
+    def test_a_quarantined_drop_is_still_recorded(self):
+        with self.assertRaises(stockbit.QuarantineError):
+            fills.import_stockbit_file(self.conn, SHIFTED, fetched_at="2026-08-18T02:00:00+00:00")
+        self.assertEqual(self._count(), 0)          # nothing landed in the ledger
+        self.assertEqual(len(self._raw_docs()), 1)  # but the drop is on record
 
 
 if __name__ == "__main__":
