@@ -42,6 +42,7 @@ function tradeFixture(over: Partial<ReviewTrade> = {}): ReviewTrade {
     id: 1, book: 'US', symbol: 'AVGO', entry_date: '2026-07-31',
     entry_qty: 60, entry_avg_price: 318.4, status: 'closed',
     stop: 302, setup: 'base_breakout', stop_provenance: 'recorded', frozen: 0,
+    stop_declined: 0,
     reviewed_at: null, note: 'Took the partial a day late on purpose.',
     adr_pct: 3.1,
     exits: [
@@ -301,6 +302,33 @@ test('a pre-boundary Trade leaves the counts and stays in the list', withDb((dbP
     .map((t) => t.symbol);
   assert.ok(listed.includes('OLD'), 'a pre-boundary Trade stays readable');
   assert.ok(listed.includes('HELD'), 'an open pre-boundary position stays visible');
+}));
+
+// ── the banner raises only stop holes worth acting on (ADR 0008, ADR 0010) ──
+test('the banner skips declined stops and pre-boundary Trades', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
+
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    INSERT INTO trade (id, book, symbol, entry_date, entry_qty, entry_avg_price, status, stop, frozen, stop_declined)
+    VALUES (1,'US','OLD',  '2026-07-31',60,318.4,'closed',null,0,0),
+           (2,'US','GAVE', '2026-08-19',60,318.4,'closed',null,0,1),
+           (3,'US','REAL', '2026-08-19',60,318.4,'closed',null,0,0);
+    INSERT INTO trade_exit (id, trade_id, source, source_ref, exit_date, quantity, price, reason)
+    VALUES (11,1,'ibkr','s1','2026-08-05',60,300,'close_below_ma10'),
+           (12,2,'ibkr','s2','2026-08-20',60,300,'close_below_ma10'),
+           (13,3,'ibkr','s3','2026-08-20',60,300,'close_below_ma10');
+    INSERT INTO book_scope (book, scope_start) VALUES ('US','2026-08-18');
+  `);
+  db.close();
+
+  const banner = readReview(dbPath, { asOf: '2026-08-20' }).banner
+    .filter((b) => b.kind === 'stop').map((b) => b.title);
+
+  // Only the one that is in the record, unanswered, and still fillable.
+  assert.ok(banner.some((t) => t.includes('REAL')), 'a real hole must be raised');
+  assert.ok(!banner.some((t) => t.includes('GAVE')), 'a declined stop is an answered question');
+  assert.ok(!banner.some((t) => t.includes('OLD')), 'a pre-boundary Trade is outside the record');
 }));
 
 // ── the intake banner answers "did I drop a TC", not "did bars arrive" ──

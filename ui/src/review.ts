@@ -59,6 +59,7 @@ export interface ReviewTrade {
   setup: string | null;
   stop_provenance: string | null; // 'recorded' | 'reconstructed' | null
   frozen: number;
+  stop_declined: number; // the trader was asked and chose the hole (ADR 0010)
   reviewed_at: string | null;
   note: string | null;
 
@@ -456,6 +457,7 @@ function readOne(db: DatabaseSync, row: Record<string, unknown>, hasCf: boolean,
     stop, setup: (row.setup as string | null) ?? null,
     stop_provenance: (row.stop_provenance as string | null) ?? null,
     frozen: (row.frozen as number) ?? 0,
+    stop_declined: (row.stop_declined as number) ?? 0,
     reviewed_at: (row.reviewed_at as string | null) ?? null,
     note: (row.note as string | null) ?? null,
     adr_pct,
@@ -509,9 +511,19 @@ function countFor(book: string, ts: ReviewTrade[]): BookCount {
 
 function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[], asOf: string | null): BannerItem[] {
   const items: BannerItem[] = [];
+  const scopeStarts = readScopeStarts(db);
+  const inScope = (t: ReviewTrade) => t.entry_date >= (scopeStarts[t.book] ?? '0000-01-01');
 
   // No stop before freeze — the fuse per item (SPEC §11.4, §3.6).
-  for (const t of closed.filter((x) => x.stop === null && !x.frozen)) {
+  //
+  // Two exclusions, both about not crying wolf. A **declined** stop is an
+  // answered question (ADR 0010) — re-raising it teaches the reader to skim the
+  // banner, which is how the one item that matters gets missed. A
+  // **pre-boundary** Trade is outside the record entirely (ADR 0008); its fuse
+  // is not a call to action, and ~90 of them drown everything else.
+  const stopWorthRaising = (t: ReviewTrade) =>
+    t.stop === null && !t.frozen && !t.stop_declined && inScope(t);
+  for (const t of closed.filter(stopWorthRaising)) {
     const fuse = t.remaining_fuse ?? 0;
     items.push({
       kind: 'stop', severity: 'bad',
@@ -519,7 +531,7 @@ function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[
       body: `Freezes in ${fuse} trading day${fuse === 1 ? '' : 's'}. After that the R is permanently missing.`,
     });
   }
-  for (const t of open.filter((x) => x.stop === null)) {
+  for (const t of open.filter(stopWorthRaising)) {
     items.push({
       kind: 'stop', severity: 'warn',
       title: `${t.symbol} — open, no stop`,
