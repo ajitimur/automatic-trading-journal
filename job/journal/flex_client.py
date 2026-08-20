@@ -8,10 +8,13 @@ Service v3 protocol, with three defences the SPEC calls out by name:
   *different* hosts (``ndcdyn`` → ``gdcdyn``), and the second is named in the
   first's response — so each leg resolves its own host over DoH freshly, never
   cached (the Akamai edge rotates minutes apart).
-* **Interception by mismatch, not by blocklist.** The address the connection
-  lands on must be one the DoH answer returned; a mismatch is interception. We
-  never match a known bad address — the ISP's block address has already moved
-  once.
+* **The DoH answer is the destination, not just a reference.** The transport
+  connects to the addresses resolved here, so the system resolver is never on
+  the path; the certificate is still verified against the hostname, which
+  catches an interceptor that manages to answer on a DoH-named address. The
+  address the socket actually reached must be one DoH returned — an invariant,
+  checked by mismatch and never against a known bad address, since the ISP's
+  block address has already moved once.
 * **HTTP 200 is not success.** Flex signals failure with an XML error body under
   a 200, so status codes are blind. An empty body is an error with *its own
   branch* — "fix the network" — distinct from the 1012/1015/1013 code family,
@@ -89,9 +92,14 @@ class Resolver(Protocol):
 
 
 class Transport(Protocol):
-    """The HTTP seam: GET a URL, reporting which address it landed on."""
+    """The HTTP seam: GET a URL over the DoH-resolved addresses it is given.
 
-    def get(self, url: str) -> HttpResponse:
+    The client hands down the addresses rather than letting the transport
+    resolve, so the system resolver is never on the path (§13.3). The response
+    reports which of them the socket actually reached.
+    """
+
+    def get(self, url: str, addresses: Sequence[str]) -> HttpResponse:
         ...
 
 
@@ -164,20 +172,22 @@ class FlexClient:
         raise FlexError(f"Flex transient error {last_code} did not clear")
 
     def _get_verified(self, url: str) -> str:
-        """GET ``url``, resolving its host over DoH and checking for interception.
+        """GET ``url`` over its DoH-resolved addresses, refusing anything else.
 
-        DoH runs per host, per call (uncached). The connection's address must be
-        one DoH returned; a mismatch is interception. An empty body is its own
-        error, never an empty statement.
+        DoH runs per host, per call (uncached), and its answer *is* the
+        connection's destination — the system resolver never sees the host
+        (§13.3). The mismatch check stays as an invariant on the socket's real
+        peer: nothing may reach an address DoH did not name. An empty body is
+        its own error, never an empty statement.
         """
         host = urllib.parse.urlparse(url).hostname or ""
         doh_addresses = list(self._resolver.resolve(host))
-        response = self._transport.get(url)
+        response = self._transport.get(url, doh_addresses)
         if response.connected_ip not in doh_addresses:
             raise InterceptionError(
                 f"{host} resolved over DoH to {doh_addresses}, but the "
-                f"connection landed on {response.connected_ip} — DNS "
-                f"interception; fix the network"
+                f"connection landed on {response.connected_ip} — the socket "
+                f"reached an address DoH did not name; fix the network"
             )
         if not response.text.strip():
             raise EmptyResponseError(
@@ -228,11 +238,11 @@ def build_default_client(
     modules, the way the bar pipeline keeps yfinance behind its adapter.
     """
     from .doh import DohResolver
-    from .flex_transport import SystemTransport
+    from .flex_transport import PinnedTransport
 
     return FlexClient(
         resolver=DohResolver(),
-        transport=SystemTransport(),
+        transport=PinnedTransport(),
         warn=warn,
         today=today,
     )

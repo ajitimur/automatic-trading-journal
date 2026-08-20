@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from . import backup, books, counterfactual, db, equity, export, fills, flex, flex_client, review, risk, secrets, stockbit, stops, trades
+from . import backup, books, counterfactual, db, doh, equity, export, fills, flex, flex_client, flex_transport, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -65,11 +65,40 @@ def _format_summary(result: RunResult, db_path: str) -> str:
     return "\n".join(lines)
 
 
+# The env seam that turns the nightly fetch off (§13.7): ``JOURNAL_BARS=off``.
+# It exists because the bar pass is the one part of ``run`` that touches the
+# network, and an integration test of the CLI must exercise the whole command
+# without a socket. Checking whether ``yfinance`` imports is not a substitute —
+# the adapter defers that import to the moment of a real fetch, by design, so
+# the package being absent stays invisible until the socket is opened.
+ENV_BARS = "JOURNAL_BARS"
+
+
+def _build_bar_cache(conn):
+    """Assemble the real bar cache, or ``None`` when bars are switched off.
+
+    A seam, like the Flex client's: the concrete fetcher is named only here, so
+    nothing above the composition root depends on yfinance (§4.4). ``None``
+    reaches the run as a *gated* bars pass — stated on the run record, never a
+    silent no-op — so an operator reads the reason off the banner instead of
+    wondering why the regime never stamped.
+    """
+    if os.environ.get(ENV_BARS, "").strip().lower() in {"off", "0", "false"}:
+        return None
+
+    from .bars import BarCache
+    from .yfinance_adapter import YFinanceFetcher
+
+    return BarCache(conn, YFinanceFetcher())
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
     try:
-        result = execute_run(conn, as_of=args.as_of)
+        result = execute_run(
+            conn, as_of=args.as_of, bar_cache=_build_bar_cache(conn)
+        )
     finally:
         conn.close()
     print(_format_summary(result, db_path))
@@ -401,6 +430,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         flex.FlexError,
         flex_client.InterceptionError,
         flex_client.EmptyResponseError,
+        flex_transport.TransportError,
+        doh.DohError,
         secrets.SecretNotFound,
     ) as exc:
         # The network path lies (SPEC §13.3): a Flex error body, DNS
@@ -467,6 +498,8 @@ def cmd_fetch_nav(args: argparse.Namespace) -> int:
         flex.FlexError,
         flex_client.InterceptionError,
         flex_client.EmptyResponseError,
+        flex_transport.TransportError,
+        doh.DohError,
         secrets.SecretNotFound,
     ) as exc:
         # The NAV XML joins the keep-forever tier only once it is captured; a

@@ -4,4 +4,14 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="${here}/..:${PYTHONPATH:-}"
+
+# Prefer the repo's virtualenv when one exists. The bar pass needs yfinance, and
+# a Homebrew interpreter is externally managed (PEP 668) so the dependency
+# cannot be installed into it. Falling back to `python3` keeps the command
+# working on a machine whose interpreter does carry the dependency — the choice
+# of interpreter is deployment, not code.
+venv="${here}/../../.venv/bin/python3"
+if [[ -x "$venv" ]]; then
+  exec "$venv" -m journal "$@"
+fi
 exec python3 -m journal "$@"

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 
 from journal import books, db
+from journal import run as run_module
 from journal.run import execute_run
 
 
@@ -47,12 +48,19 @@ class GatingTest(unittest.TestCase):
         conn = db.connect(self.db_path)
         result = execute_run(conn, as_of="2026-08-13")
 
-        enrichment = [p for p in result.passes if p.name != "intake"]
+        # Five passes per book: bars and intake ahead of the gate, then the
+        # three enrichment passes it governs. With no bar cache wired the fetch
+        # gates rather than reaching for a socket.
+        self.assertEqual(len(result.passes), len(books.BOOKS) * 5)
+
+        enriching = [name for name, _ in run_module._PASSES]
+        enrichment = [p for p in result.passes if p.name in enriching]
         self.assertEqual(len(enrichment), len(books.BOOKS) * 3)
         self.assertTrue(all(p.status == "gated" for p in enrichment))
 
+        placeholders = ",".join("?" for _ in enriching)
         rows = conn.execute(
-            "SELECT * FROM run_pass WHERE name != 'intake'"
+            f"SELECT * FROM run_pass WHERE name IN ({placeholders})", enriching
         ).fetchall()
         self.assertEqual(len(rows), len(books.BOOKS) * 3)
         self.assertTrue(all(r["status"] == "gated" for r in rows))
@@ -81,13 +89,19 @@ class GatingTest(unittest.TestCase):
         by_book = {}
         for p in result.passes:
             by_book.setdefault(p.book, {})[p.name] = p.status
+        enriching = [name for name, _ in run_module._PASSES]
         self.assertEqual(
-            set(by_book[books.US].values()), {"ran"}, by_book[books.US]
+            {by_book[books.US][n] for n in enriching}, {"ran"}, by_book[books.US]
         )
-        # IDX enrichment gates; its intake pass still ran (and is a no-op).
-        idx = dict(by_book[books.IDX])
-        self.assertEqual(idx.pop("intake"), "ran")
-        self.assertEqual(set(idx.values()), {"gated"}, idx)
+        self.assertEqual(
+            {by_book[books.IDX][n] for n in enriching}, {"gated"}, by_book[books.IDX]
+        )
+        # Neither pre-gate pass is under the gate: bars is what lifts it, and
+        # intake does not depend on it at all.
+        self.assertEqual(by_book[books.US]["bars"], "gated")
+        self.assertEqual(by_book[books.IDX]["bars"], "gated")
+        self.assertEqual(by_book[books.US]["intake"], "ran")
+        self.assertEqual(by_book[books.IDX]["intake"], "ran")
         conn.close()
 
     def test_run_never_commits_a_trade(self):

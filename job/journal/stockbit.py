@@ -48,11 +48,19 @@ BOOK = books.IDX
 REVISION = 0
 
 # The fee identity (docs/samples/export-findings.md), exact to the rupiah:
-#   buy  Total Cost = gross + 0.15% bundle + Rp10,000 stamp duty (flat, per doc)
-#   sell Total Cost = gross − 0.15% bundle − 0.10% income tax
+#   buy  Total Cost = gross + 0.15% bundle + stamp duty (flat, per document)
+#   sell Total Cost = gross − 0.15% bundle − 0.10% income tax + stamp duty
 _FEE_RATE = 0.0015           # Commission + V.A.T + IDX Fee + V.A.T Levy, both sides
 _INCOME_TAX_RATE = 0.0010    # sell-side only
-_STAMP_DUTY = 10_000.0       # buy-side only, flat per document
+
+# **Stamp duty is read, never assumed.** The sample set showed it only on a
+# buy-side document, and the parser inferred it from the side at a flat
+# Rp10,000. Real statements contradict both halves: it is printed on *both*
+# columns, it is charged on sell documents too, and on most days it is zero
+# (3 of 34 statements from July–August 2026 carried it). Inferring it silently
+# treated a real Rp10,000 charge as absent, which is exactly the kind of
+# unstated fact the document-level gate exists to catch — so the printed line
+# is the fact, and a document that does not print one is not parsed at all.
 
 # The printed Total Cost is rounded to 2 decimals and the recompute uses exact
 # rates, so allow a rupiah of slack. A column shift is off by a factor of ~100 —
@@ -70,6 +78,15 @@ _ROW = re.compile(
 )
 
 _TXN_DATE = re.compile(r"Transaction Date\s+(?P<d>\d{2}/\d{2}/\d{4})")
+
+# The stamp duty line, both columns. A zero column prints as bare ``0`` while a
+# charged one prints as ``10,000.00``, so the decimals are optional. Unlike
+# ``Total Cost`` this is not anchored left: the fee block shares its lines with
+# the address column, which already collides with ``Income Tax`` in real output.
+_STAMP_DUTY_LINE = re.compile(
+    r"Stamp Duty\s+(?P<buy>[\d,]+(?:\.\d+)?)\s+(?P<sell>[\d,]+(?:\.\d+)?)\s*$",
+    re.MULTILINE,
+)
 _TOTAL_COST = re.compile(
     r"^\s*Total Cost\s+(?P<buy>[\d,]+\.\d+)\s+(?P<sell>[\d,]+\.\d+)\s*$",
     re.MULTILINE,
@@ -212,12 +229,24 @@ def _reconcile_or_quarantine(rows: list[_Row], text: str) -> None:
     printed_buy = _number(printed.group("buy"))
     printed_sell = _number(printed.group("sell"))
 
+    stamp = _STAMP_DUTY_LINE.search(text)
+    if not stamp:
+        raise StockbitError(
+            "no Stamp Duty line found — the charge is a stated fact on every "
+            "Trade Confirmation and is never assumed from the side"
+        )
+    stamp_buy = _number(stamp.group("buy"))
+    stamp_sell = _number(stamp.group("sell"))
+
     gross_buy = sum(r.quantity * r.price for r in rows if r.side == "BUY")
     gross_sell = sum(r.quantity * r.price for r in rows if r.side == "SELL")
 
-    stamp = _STAMP_DUTY if any(r.side == "BUY" for r in rows) else 0.0
-    expected_buy = gross_buy * (1 + _FEE_RATE) + stamp
-    expected_sell = gross_sell * (1 - _FEE_RATE - _INCOME_TAX_RATE)
+    # Stamp duty *adds* to what a buy costs and *subtracts* from what a sell
+    # pays out: it is a charge either way, and the sell column is proceeds.
+    expected_buy = gross_buy * (1 + _FEE_RATE) + stamp_buy
+    expected_sell = (
+        gross_sell * (1 - _FEE_RATE - _INCOME_TAX_RATE) - stamp_sell
+    )
 
     for side, expected, printed_total in (
         ("buy", expected_buy, printed_buy),

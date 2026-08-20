@@ -20,7 +20,7 @@ class FakeFetcher:
         self._bars = list(bars)
         self.calls = 0
 
-    def fetch(self, symbol, start, end):
+    def fetch(self, book, symbol, start, end):
         self.calls += 1
         return list(self._bars)
 
