@@ -165,6 +165,54 @@ class TradesTest(unittest.TestCase):
             self.conn.execute("SELECT COUNT(*) AS n FROM trade_exit").fetchone()["n"], 0
         )
 
+    # ── An over-allocating sell commits the part that fits (SPEC §3.4) ──
+    def test_over_allocating_sell_closes_what_it_can(self):
+        """The IWDA shape: 29 bought inside the export window, 58 sold.
+
+        The sell exceeds everything journalled as open because the position was
+        built before the broker's window. Refusing it outright left the Trade
+        reading ``open`` for five months after it was sold — §3.4 forbids
+        allocating a Trade *more* than it holds open, not filling what fits.
+        """
+        fills.insert_fills(self.conn, [
+            _buy("b1", "IWDA", 29, 122.71, "2026-08-03T09:30:00-04:00"),
+            _sell("s1", "IWDA", 58, 123.89, "2026-08-07T10:00:00-04:00"),
+        ])
+        (proposal,) = [p for p in trades.propose(self.conn) if p.kind == "exit-allocation"]
+        self.assertEqual(proposal.over_allocated, 29)
+        self.assertFalse(proposal.blocked)  # the fitting part is confirmable
+
+        result = trades.confirm(self.conn)
+        self.assertEqual(result.exits_allocated, 1)
+        self.assertEqual(result.parked_exits, 1)  # the 29-share remainder
+
+        (t,) = self._trades()
+        self.assertEqual(t["status"], "closed")  # the 29 held open were allocated
+        self.assertEqual(
+            self.conn.execute("SELECT SUM(quantity) q FROM trade_exit").fetchone()["q"], 29
+        )
+
+    # ── The unallocated remainder resurfaces rather than vanishing ──
+    def test_over_allocation_remainder_becomes_an_orphan_exit(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "IWDA", 29, 122.71, "2026-08-03T09:30:00-04:00"),
+            _sell("s1", "IWDA", 58, 123.89, "2026-08-07T10:00:00-04:00"),
+        ])
+        trades.confirm(self.conn)
+
+        # Re-deriving sees the Fill as *partly* allocated, not simply "seen":
+        # 29 of 58 landed, so the residual 29 has no open Trade left to take it.
+        (orphan,) = [p for p in trades.propose(self.conn) if p.kind == "orphan-exit"]
+        self.assertEqual(orphan.quantity, 29)
+        self.assertTrue(orphan.blocked)
+
+        # And it stays put — re-confirming never double-allocates the same Fill.
+        again = trades.confirm(self.conn)
+        self.assertEqual(again.exits_allocated, 0)
+        self.assertEqual(
+            self.conn.execute("SELECT SUM(quantity) q FROM trade_exit").fetchone()["q"], 29
+        )
+
     # ── A restatement changes the derivation: highest revision wins (ADR 0003) ──
     def test_highest_revision_drives_the_cohort(self):
         fills.insert_fills(self.conn, [_buy("b1", "AAA", 100, 10.0, "2026-08-03T09:30:00-04:00")])

@@ -117,15 +117,18 @@ class Proposal:
     def blocked(self) -> bool:
         """A parked item: it sinks below the confirmable ones and confirm skips it.
 
-        An ``orphan-exit`` has nothing journalled to come out of; an
-        ``exit-allocation`` with an ``over_allocated`` remainder could only be
-        partially filled. Both park until the missing entry is journalled (SPEC
-        §5.2). ``quarantine``, ``enrichment-repair`` and ``drift`` are attention
-        items, not confirmable-in-place, and count as parked for the skip.
+        An ``orphan-exit`` has nothing journalled to come out of, so it parks
+        until the missing entry is journalled (SPEC §5.2). ``quarantine``,
+        ``enrichment-repair`` and ``drift`` are attention items, not
+        confirmable-in-place, and count as parked for the skip.
+
+        An ``exit-allocation`` that over-allocates does **not** park. §3.4 forbids
+        allocating a Trade more than it holds open; it does not require refusing
+        the part that fits. Parking the whole proposal turned a partly-known exit
+        into a wholly-unknown one and left Trades reading ``open`` months after
+        they were sold — the remainder resurfaces as an ``orphan-exit`` instead.
         """
-        if self.kind in ("orphan-exit", "quarantine", "enrichment-repair", "drift"):
-            return True
-        return self.kind == "exit-allocation" and self.over_allocated > 0
+        return self.kind in ("orphan-exit", "quarantine", "enrichment-repair", "drift")
 
 
 @dataclass
@@ -348,16 +351,26 @@ def _close(a: float, b: float, tol: float = 1e-9) -> bool:
 def _unallocated_sells(
     conn: sqlite3.Connection, fills: Sequence[sqlite3.Row]
 ) -> List[_Sell]:
-    """Sell fills not yet allocated to any Trade (idempotent on ``source_ref``)."""
-    allocated = {
-        (r["source"], r["source_ref"])
-        for r in conn.execute("SELECT source, source_ref FROM trade_exit")
-    }
+    """The still-unallocated *quantity* of each sell Fill (idempotent on ``source_ref``).
+
+    Allocation is a quantity question, not a boolean: a sell larger than the
+    Trades journalled as open allocates as far as it can and leaves a residual
+    (SPEC §3.4). Reporting that residual here is what keeps it visible — on the
+    next derivation it has no open capacity left to take it, so it resurfaces as
+    an ``orphan-exit`` rather than vanishing because the Fill was "seen".
+    """
+    allocated: Dict[Tuple[str, str], float] = {}
+    for r in conn.execute(
+        "SELECT source, source_ref, SUM(quantity) q FROM trade_exit "
+        "GROUP BY source, source_ref"
+    ):
+        allocated[(r["source"], r["source_ref"])] = r["q"] or 0.0
     sells = []
     for f in fills:
         if f["side"] != "SELL":
             continue
-        if (f["source"], f["source_ref"]) in allocated:
+        residual = abs(f["quantity"]) - allocated.get((f["source"], f["source_ref"]), 0.0)
+        if residual <= 1e-9:
             continue
         sells.append(
             _Sell(
@@ -366,7 +379,7 @@ def _unallocated_sells(
                 book=f["book"],
                 symbol=f["symbol"],
                 exit_date=_entry_date(f["executed_at"]),
-                quantity=abs(f["quantity"]),
+                quantity=residual,
                 price=f["price"],
             )
         )
@@ -596,9 +609,10 @@ def confirm(
         if p.kind != "exit-allocation":
             continue
         allocations = _resolve_allocations(p, overrides, ids, open_qty)
-        if allocations is None:
-            result.parked_exits += 1  # over-allocated — parks (SPEC §5.2)
-            continue
+        if p.over_allocated > 0:
+            # The part that fits commits below; the remainder stays unallocated
+            # on the Fill and re-derives as an orphan exit (SPEC §3.4, §5.2).
+            result.parked_exits += 1
         reason = reasons.get(p.source_ref or "") or p.proposed_reason
         _commit_exit(conn, p, allocations, reason, ids, open_qty, touched)
         result.exits_allocated += 1
@@ -695,8 +709,12 @@ def _resolve_allocations(
     overrides: Override,
     ids: Mapping[Tuple[str, str, str], int],
     open_qty: Mapping[int, float],
-) -> Optional[List[Allocation]]:
-    """FIFO allocations for a sell, or a validated override; ``None`` if it parks."""
+) -> List[Allocation]:
+    """FIFO allocations for a sell, or a validated override.
+
+    Always allocates as much as the open Trades can absorb; an over-allocating
+    sell leaves its remainder unallocated rather than refusing outright.
+    """
     override = overrides.get(proposal.source_ref) if proposal.source_ref else None
     if override is not None:
         allocations = [
@@ -706,8 +724,8 @@ def _resolve_allocations(
         _validate_override(proposal, allocations, ids, open_qty)
         return allocations
 
-    if proposal.over_allocated > 0:
-        return None  # nothing (or not enough) open to absorb it — it parks
+    # An over-allocating sell still commits the part that fits (§3.4); the
+    # remainder stays unallocated on the Fill and re-derives as an orphan exit.
     return list(proposal.allocations)
 
 

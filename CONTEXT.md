@@ -26,6 +26,14 @@ _Avoid_: Holding, trade
 One of the two markets the journal covers, US or IDX, carrying its currency, benchmark, broker, and lot convention. Nothing is ever aggregated across books.
 _Avoid_: Account, portfolio, market
 
+**Scope Start**:
+The date from which a Book's Trades count. Stated per Book, because the two books' records begin at different places for different reasons and a single date would be the first thing ever shared between them. Trades entered before it stay in the journal and stay readable — their Fills are facts, and their Exits still need somewhere to allocate — but they enter no count, no aggregate, and no export. It marks where the record became answerable rather than where trading began.
+_Avoid_: Cutoff, epoch, since date, inception
+
+**Orphan Exit**:
+A sell Fill with no journalled entry to come out of, because the position was built before the broker's export window reached back. It parks rather than guessing: nothing is inferred about a Trade the journal never saw. Distinct from a Trade that closed normally, and distinct from the remainder of a sell that allocated as far as the open Trades allowed — that remainder becomes one of these once the part that fit has landed.
+_Avoid_: Unmatched sell, dangling exit, orphan trade
+
 **Equity Snapshot**:
 What a Book was worth on a given date, marked to market. The most recent snapshot at or before a Trade's entry date is what its Risk Percentage and Exposure Percentage are measured against. Dated on the calendar rather than in Trading Days, and captured from the source that reported it rather than derived on demand — a broker window that only reaches back a year would otherwise take the journal's own history with it when it moves. Each snapshot states where its number came from and keeps the components it was read from, so the choice of which figure counts as equity stays revisable.
 _Avoid_: Balance, capital, NAV, deposited capital
@@ -41,7 +49,7 @@ _Avoid_: Timeout, expiry, TTL, freshness
 ### Trade properties
 
 **Stop**:
-The price at which the trader was working to abandon the Trade. Entered by hand — it is not derivable from bars — and immutable once set.
+The price at which the trader was working to abandon the Trade. Entered by hand — it is not derivable from bars — and immutable once set. Entered while the Trade is live or not at all: a level read off the chart after the fact is a different thing wearing the same name, and the journal would rather carry a hole than a denominator it invented. A Trade that freezes without one has no Risk Percentage and no Realized R, ever.
 _Avoid_: Initial stop, stop loss, trailing stop (the journal does not track stop adjustments)
 
 **Setup**:
@@ -57,7 +65,7 @@ Why a particular Exit happened, drawn from a fixed vocabulary. Proposed by enric
 _Avoid_: Exit type, sell reason
 
 **Stop Provenance**:
-Whether a Trade's stop was recorded before its first Exit, or reconstructed from memory afterwards. Derived from timestamps, never entered.
+Whether a Trade's stop was set early enough to be believed, or late enough to be suspect. Derived from timestamps, never entered. A stop set before the Trade's first Exit is recorded, and so is one set within a few trading days of entry even if an Exit has landed — a Trade that opens and closes inside a week would otherwise be unjudgeable no matter how promptly its stop arrived. Past that window it is reconstructed, and excluded from the judgements hindsight would flatter. The window is why recorded means *set while it was still early*, not *set before the outcome was known*.
 _Avoid_: Confidence, backdated flag
 
 **Risk Percentage**:

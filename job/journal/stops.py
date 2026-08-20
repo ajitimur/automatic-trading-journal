@@ -12,11 +12,15 @@ banner, not the confirm queue.
 
 Two derived rules ride along:
 
-- **`stop_provenance` is derived, never typed** (ADR 0002): ``recorded`` if the
-  stop arrived before the Trade's first Exit, ``reconstructed`` if after — read
-  off *when* the stop was set relative to the exits on record, never a
-  self-reported confidence scale. Chasing (editing) the stop re-derives it, so
-  the provenance always describes the value currently on the row.
+- **`stop_provenance` is derived, never typed** (ADR 0002, amended by ADR 0009):
+  ``recorded`` if the stop arrived before the Trade's first Exit **or** within
+  ``GRACE_TRADING_DAYS`` trading days of entry, ``reconstructed`` otherwise —
+  read off *when* the stop was set, never a self-reported confidence scale.
+  Chasing (editing) the stop re-derives it, so the provenance always describes
+  the value currently on the row.
+- **Stops are never backfilled** (ADR 0009). Past the grace window a stop can
+  still be set, but it derives ``reconstructed`` and is barred from adherence
+  and chase scoring — there is no path that makes an old Trade gradeable.
 - **The two fields are editable until freeze and locked after it** (SPEC §3.5).
   A stop supplied after freeze is refused, so a Trade frozen without one keeps no
   Risk % and no Realized R, ever — the known and accepted cost of making the stop
@@ -26,6 +30,7 @@ Two derived rules ride along:
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from typing import Optional, Tuple
 
 # The fixed setup vocabulary (SPEC §3.2). Accumulating ``other`` is the signal to
@@ -34,6 +39,12 @@ SETUP_VOCABULARY: Tuple[str, str, str] = ("base_breakout", "high_tight_flag", "o
 
 RECORDED = "recorded"
 RECONSTRUCTED = "reconstructed"
+
+# How long after entry a stop still counts as ``recorded`` even though an Exit is
+# already on record (ADR 0009). Three, because the strategy's first planned
+# decision is ``planned_partial_day3`` — a window wider than that would start
+# certifying stops set after the trader had already acted on the Trade.
+GRACE_TRADING_DAYS = 3
 
 
 class UnknownTrade(ValueError):
@@ -69,28 +80,81 @@ def _require_unfrozen(conn: sqlite3.Connection, trade_id: int, field: str) -> No
         )
 
 
-def _derive_provenance(conn: sqlite3.Connection, trade_id: int) -> str:
-    """``recorded`` if no Exit has landed yet, ``reconstructed`` if one has.
+def _trading_days_since_entry(
+    conn: sqlite3.Connection, trade_id: int, as_of: str
+) -> Optional[int]:
+    """Trading days elapsed since the Trade's entry, or ``None`` if uncountable.
 
-    Derived from *when* the stop is being set relative to the exits on record —
-    a stop entered while the Trade has an Exit is contaminated by hindsight and
-    must be excludable from discipline scoring without the trader self-reporting.
+    Counted off the symbol's own cached bars, so a suspension stretches the
+    window in calendar time rather than filling it with a day that did not
+    happen (SPEC §7.1). ``None`` when no bars are cached — the caller then falls
+    back to the stricter rule rather than guessing the window in calendar days.
+    """
+    row = conn.execute(
+        "SELECT book, symbol, entry_date FROM trade WHERE id = ?", (trade_id,)
+    ).fetchone()
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM bar "
+        "WHERE book = ? AND symbol = ? AND date > ? AND date <= ?",
+        (row["book"], row["symbol"], row["entry_date"], as_of),
+    ).fetchone()["n"]
+    have_any = conn.execute(
+        "SELECT COUNT(*) AS n FROM bar WHERE book = ? AND symbol = ?",
+        (row["book"], row["symbol"]),
+    ).fetchone()["n"]
+    return n if have_any else None
+
+
+def _derive_provenance(
+    conn: sqlite3.Connection, trade_id: int, as_of: str
+) -> str:
+    """``recorded`` if set before the first Exit **or** inside the grace window.
+
+    Derived from *when* the stop is being set — never self-reported. The base
+    rule is that a stop entered once an Exit is on record is contaminated by
+    hindsight (ADR 0002), but that rule alone permanently holes every Trade
+    that opens and closes inside the same few days, which on a fast book is
+    most of them.
+
+    So a stop set within ``GRACE_TRADING_DAYS`` trading days **of the entry
+    date** counts as ``recorded`` regardless of exits (ADR 0009). Anchored to
+    entry rather than to the first Exit because only the entry date bounds
+    "before I knew" honestly — anchoring to the Exit would certify a stop typed
+    months into a Trade that happened to run.
+
+    The cost is real and deliberate: inside the window a stop may be entered on
+    an already-closed Trade with its outcome fully visible, so ``recorded`` no
+    longer guarantees an uncontaminated stop the way SPEC §10.6's tier table
+    once implied. Trades whose bars are not cached keep the strict rule.
     """
     allocated = conn.execute(
         "SELECT COUNT(*) AS n FROM trade_exit WHERE trade_id = ?", (trade_id,)
     ).fetchone()["n"]
-    return RECONSTRUCTED if allocated else RECORDED
+    if not allocated:
+        return RECORDED
+    elapsed = _trading_days_since_entry(conn, trade_id, as_of)
+    if elapsed is not None and elapsed <= GRACE_TRADING_DAYS:
+        return RECORDED
+    return RECONSTRUCTED
 
 
-def set_stop(conn: sqlite3.Connection, trade_id: int, stop: float) -> str:
+def set_stop(
+    conn: sqlite3.Connection,
+    trade_id: int,
+    stop: float,
+    as_of: Optional[str] = None,
+) -> str:
     """Record or chase the stop; returns the derived provenance. Refused once frozen.
 
     Editable until freeze (SPEC §3.5), so a busy-day Trade can be filled in or
-    adjusted later. The provenance is re-derived on every set from whether an
-    Exit is already on record, so it always describes the stop currently stored.
+    adjusted later. The provenance is re-derived on every set, so it always
+    describes the stop currently stored. ``as_of`` is the date the stop is being
+    set, defaulting to today — it is a parameter so the grace window is testable
+    and so a backfilled run reproduces.
     """
     _require_unfrozen(conn, trade_id, "stop")
-    provenance = _derive_provenance(conn, trade_id)
+    as_of = as_of or date.today().isoformat()
+    provenance = _derive_provenance(conn, trade_id, as_of)
     conn.execute(
         "UPDATE trade SET stop = ?, stop_provenance = ? WHERE id = ?",
         (stop, provenance, trade_id),

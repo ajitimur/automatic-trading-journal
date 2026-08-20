@@ -86,6 +86,80 @@ class StopsTest(unittest.TestCase):
             stops.annotations(self.conn, trade_id)["stop_provenance"], "reconstructed"
         )
 
+    def _bars(self, dates, symbol="AAA", book="US"):
+        """Cache trading days for the symbol, so the grace window can be counted."""
+        for d in dates:
+            self.conn.execute(
+                "INSERT INTO bar (book, symbol, date, open, high, low, close, volume) "
+                "VALUES (?, ?, ?, 10, 11, 9, 10, 1000)",
+                (book, symbol, d),
+            )
+        self.conn.commit()
+
+    # ── The grace window: a stop set soon after entry is 'recorded' (ADR 0009) ──
+    def test_stop_inside_the_grace_window_is_recorded(self):
+        trade_id = self._open_trade()  # entered 2026-08-03
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"])
+        # Three trading days after entry — inside the window despite the Exit.
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-06"),
+            stops.RECORDED,
+        )
+
+    # ── Past the window the stop is reconstructed, exits or not ──
+    def test_stop_past_the_grace_window_is_reconstructed(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"])
+        # Four trading days after entry — one past the window.
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-07"),
+            stops.RECONSTRUCTED,
+        )
+
+    # ── The window counts trading days, so a suspension stretches it ──
+    def test_grace_window_counts_trading_days_not_calendar_days(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        # The symbol traded on only two days in the fortnight after entry.
+        self._bars(["2026-08-04", "2026-08-14"])
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-17"),
+            stops.RECORDED,  # 11 calendar days, but only 2 trading days
+        )
+
+    # ── The accepted cost: inside the window, a closed Trade still reads recorded ──
+    def test_grace_window_certifies_a_closed_trade(self):
+        """Deliberate (ADR 0009): the outcome is visible and it still says recorded.
+
+        Without this the window buys nothing on a book where Trades routinely
+        open and close within days — but it does mean `recorded` no longer
+        promises an uncontaminated stop.
+        """
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM trade WHERE id = ?", (trade_id,)
+            ).fetchone()["status"],
+            "closed",
+        )
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-05"),
+            stops.RECORDED,
+        )
+
+    # ── With no bars cached the window cannot be counted, so the strict rule holds ──
+    def test_uncountable_window_falls_back_to_the_strict_rule(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-04"),
+            stops.RECONSTRUCTED,
+        )
+
     # ── Acceptance: stop and setup are editable until freeze ──
     def test_stop_and_setup_editable_until_freeze(self):
         trade_id = self._open_trade()
