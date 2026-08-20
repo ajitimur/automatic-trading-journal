@@ -42,6 +42,7 @@ function tradeFixture(over: Partial<ReviewTrade> = {}): ReviewTrade {
     id: 1, book: 'US', symbol: 'AVGO', entry_date: '2026-07-31',
     entry_qty: 60, entry_avg_price: 318.4, status: 'closed',
     stop: 302, setup: 'base_breakout', stop_provenance: 'recorded', frozen: 0,
+    stop_declined: 0,
     reviewed_at: null, note: 'Took the partial a day late on purpose.',
     adr_pct: 3.1,
     exits: [
@@ -266,41 +267,89 @@ test('readReview scopes the week and derives R from stored primitives', withDb((
   assert.ok(state.banner.some((b) => b.kind === 'insufficient_history' && b.title.includes('SMCI')));
 }));
 
-// ── Scope Start bounds the counts but never the lists (ADR 0008, SPEC §11.3) ──
-test('a pre-boundary Trade leaves the counts and stays in the list', withDb((dbPath) => {
-  journal(dbPath, ['run', '--as-of', '2026-08-12']);
+// ── Scope Start governs the whole surface, except what is still held ──
+test('a closed pre-boundary Trade leaves the surface; an open one stays', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
 
   const db = new DatabaseSync(dbPath);
   db.exec(`
     INSERT INTO trade (id, book, symbol, entry_date, entry_qty, entry_avg_price, status, stop, stop_provenance, frozen)
-    VALUES (1,'US','OLD','2026-07-31',60,318.4,'closed',302,'recorded',0),
-           (2,'US','NEW','2026-08-03',60,318.4,'closed',302,'recorded',0),
-           (3,'US','HELD','2026-07-20',22,742.1,'open',null,null,0);
+    VALUES (1,'US','OLD', '2026-07-31',60,318.4,'closed',302,'recorded',0),
+           (2,'US','NEW', '2026-08-19',60,318.4,'closed',302,'recorded',0),
+           (3,'US','HELD','2026-07-20',22,742.1,'open',  null,null,     0);
     INSERT INTO trade_exit (id, trade_id, source, source_ref, exit_date, quantity, price, reason)
     VALUES (11,1,'ibkr','s1','2026-08-05',60,341.9,'close_below_ma10'),
-           (12,2,'ibkr','s2','2026-08-06',60,341.9,'close_below_ma10');
+           (12,2,'ibkr','s2','2026-08-20',60,341.9,'close_below_ma10');
     INSERT INTO trade_exit_geometry (trade_id, book, symbol, exit_date, bar_date, exit_avg_price)
     VALUES (1,'US','OLD','2026-08-05','2026-08-05',341.9),
-           (2,'US','NEW','2026-08-06','2026-08-06',341.9);
+           (2,'US','NEW','2026-08-20','2026-08-20',341.9);
   `);
   db.close();
 
-  const before = readReview(dbPath, { asOf: '2026-08-12' });
-  assert.equal(before.counts.find((c) => c.book === 'US')!.closed, 2);
+  const before = readReview(dbPath, { asOf: '2026-08-20' });
+  const listed = (st: typeof before) =>
+    [...st.weekTrades, ...st.stragglers, ...st.openTrades].map((t) => t.symbol);
+  assert.deepEqual(listed(before).sort(), ['HELD', 'NEW', 'OLD']);
 
   const db2 = new DatabaseSync(dbPath);
-  db2.exec(`INSERT INTO book_scope (book, scope_start) VALUES ('US','2026-08-01');`);
+  db2.exec(`INSERT INTO book_scope (book, scope_start) VALUES ('US','2026-08-18');`);
   db2.close();
 
-  const after = readReview(dbPath, { asOf: '2026-08-12' });
-  // The count drops to the one Trade inside the record.
-  assert.equal(after.counts.find((c) => c.book === 'US')!.closed, 1);
-  // But OLD is still readable, and HELD — a position entered before the boundary
-  // and still open — must not vanish from the surface used to manage it.
-  const listed = [...after.weekTrades, ...after.stragglers, ...after.openTrades]
-    .map((t) => t.symbol);
-  assert.ok(listed.includes('OLD'), 'a pre-boundary Trade stays readable');
-  assert.ok(listed.includes('HELD'), 'an open pre-boundary position stays visible');
+  const after = readReview(dbPath, { asOf: '2026-08-20' });
+  // The closed pre-boundary Trade is gone — that history is what the boundary
+  // exists to leave behind.
+  assert.ok(!listed(after).includes('OLD'), 'closed pre-boundary Trades leave the surface');
+  // But a position still held stays, however old: it can never count, and it is
+  // live money that has to be manageable somewhere.
+  assert.ok(listed(after).includes('HELD'), 'an open pre-boundary position stays visible');
+  assert.ok(listed(after).includes('NEW'));
+
+  // And it still never reaches a count (§11.3: open Trades are outside them).
+  const us = after.counts.find((c) => c.book === 'US')!;
+  assert.equal(us.closed, 1);
+}));
+
+// ── The week never opens before the record does ──
+test('a review week that closes before Scope Start clamps forward', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
+  const db = new DatabaseSync(dbPath);
+  db.exec(`INSERT INTO book_scope (book, scope_start) VALUES ('US','2026-08-18');`);
+  db.close();
+
+  // As-of Thursday 20 Aug, the last *completed* Mon–Fri is 10–14 Aug, which
+  // ends four days before the record opens — a window that can only ever read
+  // "no Trades closed this week".
+  const state = readReview(dbPath, { asOf: '2026-08-20' });
+  assert.equal(state.week_from, '2026-08-17');
+  assert.equal(state.week_to, '2026-08-21');
+  assert.match(state.week_label, /first week of the record/);
+}));
+
+// ── the banner raises only stop holes worth acting on (ADR 0008, ADR 0010) ──
+test('the banner skips declined stops and pre-boundary Trades', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
+
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    INSERT INTO trade (id, book, symbol, entry_date, entry_qty, entry_avg_price, status, stop, frozen, stop_declined)
+    VALUES (1,'US','OLD',  '2026-07-31',60,318.4,'closed',null,0,0),
+           (2,'US','GAVE', '2026-08-19',60,318.4,'closed',null,0,1),
+           (3,'US','REAL', '2026-08-19',60,318.4,'closed',null,0,0);
+    INSERT INTO trade_exit (id, trade_id, source, source_ref, exit_date, quantity, price, reason)
+    VALUES (11,1,'ibkr','s1','2026-08-05',60,300,'close_below_ma10'),
+           (12,2,'ibkr','s2','2026-08-20',60,300,'close_below_ma10'),
+           (13,3,'ibkr','s3','2026-08-20',60,300,'close_below_ma10');
+    INSERT INTO book_scope (book, scope_start) VALUES ('US','2026-08-18');
+  `);
+  db.close();
+
+  const banner = readReview(dbPath, { asOf: '2026-08-20' }).banner
+    .filter((b) => b.kind === 'stop').map((b) => b.title);
+
+  // Only the one that is in the record, unanswered, and still fillable.
+  assert.ok(banner.some((t) => t.includes('REAL')), 'a real hole must be raised');
+  assert.ok(!banner.some((t) => t.includes('GAVE')), 'a declined stop is an answered question');
+  assert.ok(!banner.some((t) => t.includes('OLD')), 'a pre-boundary Trade is outside the record');
 }));
 
 // ── the intake banner answers "did I drop a TC", not "did bars arrive" ──

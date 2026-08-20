@@ -790,6 +790,8 @@ One strip above the list: closed, chased, partial in band, trail on signal, stop
 
 **Split by book.** A single `2 of 3 stops recorded` over a mixed list *is* an aggregate across books. The list below may mix US and IDX freely — **a list is not an aggregate** — but no number on the page ever combines them.
 
+> **This rule is about books, not about time.** It says a mixed-book *list* implies no combined *number*; it is not a licence to list Trades from before the record began. [ADR 0008](docs/adr/0008-the-analytical-record-starts-18-august-2026.md) bounds the whole surface by Scope Start, excepting only Trades still open — which §11.3 already keeps out of the counts anyway.
+
 ### 11.2.1 Groupings do not appear at all
 
 The genuinely surprising outcome, and it has a consequence that reaches beyond this surface. There is **no *by setup*, no *by stack_state*, no *by regime*, no *by exit reason*** table anywhere. They were prototyped as variant B, seen, and not chosen.

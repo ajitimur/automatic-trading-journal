@@ -16,10 +16,18 @@ That left a choice between a large record that cannot answer the questions it wa
 
 **Scope Start is per-book, not global.** Nothing in this journal is aggregated across books, and a single global date would be the first thing that is. Both books start at 2026-08-18 today; they move independently.
 
-**The US book is empty.** Every US Trade predates the boundary, so the per-book strip in SPEC §11.2 renders an empty US column and the export ships IDX-only rows until US trading resumes. This is accepted, not overlooked.
+**The US book started empty.** Every US Trade at the time predated the boundary, so the per-book strip in SPEC §11.2 rendered an empty US column and the export shipped IDX-only rows. This was accepted rather than overlooked, and it resolved as soon as US trading resumed — the first unattended Flex fetch after the boundary brought six in-scope US Trades.
 
-**`book_drawdown_r_at_entry` reads `insufficient_history` on both books for months.** It needs 20 closed Trades with recorded stops (SPEC §7.9); the record restarts at 7.
+**`book_drawdown_r_at_entry` reads `insufficient_history` on both books for months.** It needs 20 closed Trades with recorded stops (SPEC §7.9); the record restarts at a handful.
 
 **Inclusion is governed by entry date, permanently.** A Trade entered before the boundary that closes after it never enters the aggregates, even though its outcome falls inside the journal's life. Risk %, Exposure %, Ruleset Version and Book History all resolve as-of entry; letting exit date govern inclusion would put one field meaning "as of entry" and another meaning "as of exit" inside the same aggregate.
 
-**Five pre-boundary Trades stay live in the journal.** MDIA, PTRO, VERN, APPS and MU were open when the boundary was drawn. They remain so their exit fills have somewhere to allocate under SPEC §3.4 — being *in the journal* and being *in the aggregates* are separable, and only the second is what the boundary controls. Three index ETFs (IWDA, EIMI, EQAC) that the broker export swept in were never momentum swing trades and leave regardless.
+**Scope Start governs the whole surface, not only the aggregates.** This reverses the narrower reading this ADR was first written with, which bounded the counts and left the lists alone on SPEC §11.3's *"a list is not an aggregate"*. That rule is about not letting a mixed-book list imply a combined number; it was never a licence to show a record that has been deliberately restarted alongside the stretch it was restarted to leave behind.
+
+Opening the review surface settled it. The boundary was live, the counts were correct, and the page still carried **197 closed pre-boundary Trades and a banner of ~220 items** about them. A reader meeting that page does not meet a record beginning on 18 August; they meet the old record with a correct number buried in it. The counts being right is not the same as the surface being right.
+
+**One exception: a Trade still open stays visible however old it is.** It can never *count* — inclusion is judged on entry date, permanently, per the rule above — but it is live money, and the review surface is where a position gets managed. Three IDX Trades entered before the boundary (MDIA, PTRO, VERN) are still held; hiding them would be the one way this boundary could do real harm rather than merely hide history. SPEC §11.3 already keeps open Trades out of the week's counts, so the exception cannot leak one into a number.
+
+Pre-boundary Trades also stay **in the journal** regardless of visibility, so their exit fills have somewhere to allocate under §3.4. Three index ETFs (IWDA, EIMI, EQAC) that the broker export swept in were never momentum swing trades and leave regardless.
+
+**The review week clamps forward when it closes before the record opens.** The weekly cadence takes the last *completed* Mon–Fri, which on the day the boundary was set ended four days before Scope Start — a window that could only ever report "no Trades closed this week". It now advances to the week the record begins in, labelled as partial. A cadence that cannot reach the record is not a cadence, it is an empty box that looks like a fault.
