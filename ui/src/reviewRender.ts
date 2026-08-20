@@ -278,7 +278,13 @@ function listRow(t: ReviewTrade, selected: string | null): string {
     ? ` → ${day(t.final_exit_date)}`
     : ` · held ${t.days_held ?? 0}d`;
   const noStop = t.stop === null ? ' · <span style="color:var(--bad)">no stop</span>' : '';
-  return `<a class="ti${sel}" href="?trade=${t.id}">
+  // `#work` because selecting a Trade is a full page load — the surface has no
+  // JavaScript — and without a fragment the browser lands at the top, putting
+  // the banner and the counts table between the reader and the workbench they
+  // just clicked into. The fragment scrolls the list and the detail pane, which
+  // share the top of `.work`, into view together, so clicking down the list
+  // reads as switching panes rather than as the page jumping.
+  return `<a class="ti${sel}" href="?trade=${t.id}#work">
     <span class="s">${esc(t.symbol)}</span><span class="muted" style="font-size:11px"> ${esc(t.book)}</span>
     ${right}<span class="m">${day(t.entry_date)}${tail}${noStop}</span></a>`;
 }
@@ -333,7 +339,7 @@ export function renderReview(state: ReviewState, flash?: string): string {
   .banner{border:1px solid #f0dcc0;background:var(--warn-soft);border-radius:9px;padding:13px 16px;margin-bottom:24px}
   .banner h2{color:var(--warn)} .banner ul{margin:0;padding-left:18px;font-size:13.5px} .banner li{margin-bottom:3px}
   .banner li.sev-info{color:var(--ink-soft)} .banner li.sev-bad b{color:var(--bad)}
-  .work{display:grid;grid-template-columns:268px minmax(0,1fr);gap:24px;align-items:start}
+  .work{display:grid;grid-template-columns:268px minmax(0,1fr);gap:24px;align-items:start;scroll-margin-top:20px}
   @media(max-width:1020px){.work{grid-template-columns:1fr}}
   .tradelist{border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden}
   .tradelist .grp{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;font-weight:700;color:var(--ink-faint);background:#f6f7f9;padding:6px 13px;border-bottom:1px solid var(--line)}
@@ -377,7 +383,7 @@ export function renderReview(state: ReviewState, flash?: string): string {
       </p>
     </div>
   </section>
-  <section class="work">
+  <section class="work" id="work">
     <div class="tradelist">
       ${group('Closed this week', state.weekTrades, state.selected)}
       ${group('Unreviewed from earlier', state.stragglers, state.selected, state.stragglers.length ? `· ${state.stragglers.length} waiting` : '')}

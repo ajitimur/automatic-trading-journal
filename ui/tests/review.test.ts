@@ -352,6 +352,46 @@ test('the banner skips declined stops and pre-boundary Trades', withDb((dbPath) 
   assert.ok(!banner.some((t) => t.includes('OLD')), 'a pre-boundary Trade is outside the record');
 }));
 
+// ── a repair is the last word on a symbol, not any word ever said about it ──
+test('the repair banner reads the latest fetch, so a repaired symbol drops off', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
+
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    INSERT INTO trade (id, book, symbol, entry_date, entry_qty, entry_avg_price, status, stop, frozen, stop_declined)
+    VALUES (1,'US','FIXED','2026-08-19',60,318.4,'closed',300,0,0),
+           (2,'US','BROKE','2026-08-19',60,318.4,'closed',300,0,0);
+    INSERT INTO trade_exit (id, trade_id, source, source_ref, exit_date, quantity, price, reason)
+    VALUES (11,1,'ibkr','s1','2026-08-20',60,330,'close_below_ma10'),
+           (12,2,'ibkr','s2','2026-08-20',60,330,'close_below_ma10');
+
+    -- FIXED is the ordinary run: the first ask reaches through as_of, today's
+    -- bar does not exist yet, and the re-request over the real span succeeds.
+    INSERT INTO bar_fetch (book, symbol, fetch_date, source, requested_start, requested_end,
+                           covered_start, covered_end, rows_fetched, zero_volume_filtered, span_ok, span_detail)
+    VALUES ('US','FIXED','2026-08-20','yfinance','2025-08-25','2026-08-20',
+            '2025-08-25','2026-08-19',250,0,0,'series 2025-08-25..2026-08-19 does not cover required 2025-08-25..2026-08-20 — repair required'),
+           ('US','FIXED','2026-08-20','yfinance','2025-08-25','2026-08-19',
+            '2025-08-25','2026-08-19',250,0,1,'covers 2025-08-25..2026-08-19 (0 zero-volume day(s) filtered)'),
+    -- BROKE never recovered: its last word is still a failure.
+           ('US','BROKE','2026-08-20','yfinance','2025-08-25','2026-08-20',
+            null,null,0,0,1,'covers 2025-08-25..2026-08-20 (0 zero-volume day(s) filtered)'),
+           ('US','BROKE','2026-08-20','yfinance','2025-08-25','2026-08-20',
+            null,null,0,0,0,'empty series — no bars returned');
+  `);
+  db.close();
+
+  const repairs = readReview(dbPath, { asOf: '2026-08-20' }).banner.filter((b) => b.kind === 'repair');
+
+  assert.ok(!repairs.some((r) => r.title.includes('FIXED')),
+    'a failure a later fetch repaired is not an outstanding repair');
+  const broke = repairs.find((r) => r.title.includes('BROKE'));
+  assert.ok(broke, 'a symbol whose latest fetch failed is still a repair');
+  // The detail must describe the failure being reported, not an older one that
+  // happens to share the group.
+  assert.match(broke.body, /empty series/);
+}));
+
 // ── the intake banner answers "did I drop a TC", not "did bars arrive" ──
 test('the IDX intake banner reads the drop, not the bar cache', withDb((dbPath) => {
   journal(dbPath, ['run', '--as-of', '2026-08-20']);

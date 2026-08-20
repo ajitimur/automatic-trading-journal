@@ -603,10 +603,24 @@ function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[
   // row per symbol ever fetched, so unscoped it raised a repair for every name
   // traded before the boundary — ~130 items about Trades the reader has
   // deliberately stopped looking at, which buries the handful that are real.
+  //
+  // Scoped, too, to each symbol's *latest* attempt. `bar_fetch` is append-only
+  // and a first-attempt failure is the ordinary case, not the alarming one: the
+  // job asks through `as_of`, today's bar does not exist yet, and bar_sync
+  // re-requests over the span the series actually has and succeeds (see
+  // bar_sync's TRAILING_TOLERANCE_DAYS). Asking `span_ok=0` of *any* row
+  // therefore raised a repair for every symbol the job had ever fetched, long
+  // after the repair had landed. Only a symbol's last word says whether it is
+  // still broken — and taking that row rather than an arbitrary member of a
+  // group also means the detail shown describes the failure being reported.
   const onSurface = new Set([...closed, ...open].map((t) => `${t.book}\u0000${t.symbol}`));
   if (tableExists(db, 'bar_fetch')) {
     const repairs = (db
-      .prepare('SELECT book, symbol, span_detail FROM bar_fetch WHERE span_ok=0 GROUP BY book, symbol')
+      .prepare(
+        'SELECT f.book, f.symbol, f.span_detail FROM bar_fetch f '
+        + 'JOIN (SELECT book, symbol, MAX(id) AS id FROM bar_fetch GROUP BY book, symbol) latest '
+        + 'ON latest.id = f.id WHERE f.span_ok = 0',
+      )
       .all() as Array<{ book: string; symbol: string; span_detail: string }>)
       .filter((r) => onSurface.has(`${r.book}\u0000${r.symbol}`));
     for (const r of repairs) {
