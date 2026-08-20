@@ -185,6 +185,14 @@ function reviewWeek(iso: string): { from: string; to: string } {
   return { from: mon.toISOString().slice(0, 10), to: fri.toISOString().slice(0, 10) };
 }
 
+// The Friday of the Mon–Fri week containing `iso` — used to clamp the review
+// week forward to the one the record starts in.
+function fridayOnOrAfter(iso: string): string {
+  const d = new Date(iso + 'T00:00:00Z');
+  const ahead = (5 - d.getUTCDay() + 7) % 7;
+  return new Date(d.getTime() + ahead * 86400000).toISOString().slice(0, 10);
+}
+
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -590,10 +598,17 @@ function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[
     if (eq.d) items.push({ kind: 'idx_equity', severity: 'info', title: 'IDX equity', body: `last snapshot ${eq.d}${elapsed(db, 'IDX', eq.d, asOf)}.` });
   }
   // Enrichment held for repair — a span check that failed (SPEC §11.4).
+  //
+  // Scoped to the symbols actually on this surface. `bar_fetch` accumulates a
+  // row per symbol ever fetched, so unscoped it raised a repair for every name
+  // traded before the boundary — ~130 items about Trades the reader has
+  // deliberately stopped looking at, which buries the handful that are real.
+  const onSurface = new Set([...closed, ...open].map((t) => `${t.book}\u0000${t.symbol}`));
   if (tableExists(db, 'bar_fetch')) {
-    const repairs = db
+    const repairs = (db
       .prepare('SELECT book, symbol, span_detail FROM bar_fetch WHERE span_ok=0 GROUP BY book, symbol')
-      .all() as Array<{ book: string; symbol: string; span_detail: string }>;
+      .all() as Array<{ book: string; symbol: string; span_detail: string }>)
+      .filter((r) => onSurface.has(`${r.book}\u0000${r.symbol}`));
     for (const r of repairs) {
       items.push({
         kind: 'repair', severity: 'bad',
@@ -638,9 +653,36 @@ export function readReview(dbPath: string, opts: { asOf?: string; selected?: str
     const all = allRows.map((r) =>
       readOne(db, r, hasCf, hasEnrich, hasExitGeom, hasTradeExc, hasExitExc, hasPostExit));
 
-    const week = asOf ? reviewWeek(asOf) : null;
-    const closed = all.filter((t) => t.status === 'closed');
-    const openTrades = all.filter((t) => t.status === 'open');
+    // Scope Start governs the **whole surface**, not only the aggregates
+    // (ADR 0008). The record begins on a date, and a reader opening the app
+    // should meet that record — not 197 closed Trades from the stretch it was
+    // deliberately restarted to leave behind.
+    //
+    // One exception, and it is about risk rather than tidiness: a Trade **still
+    // open** stays visible however old it is. It can never count — inclusion is
+    // judged on entry date, permanently — but it is live money, and the review
+    // surface is where it gets managed. Hiding a position the trader actually
+    // holds is the one way this boundary could do harm.
+    const scopeStarts = readScopeStarts(db);
+    const inScope = (t: ReviewTrade) =>
+      t.entry_date >= (scopeStarts[t.book] ?? '0000-01-01');
+    const onSurface = (t: ReviewTrade) => inScope(t) || t.status === 'open';
+    const visible = all.filter(onSurface);
+
+    // A week that closes before the record opens can only ever be empty, so the
+    // strip would read "no Trades closed this week" forever rather than saying
+    // the record simply has not reached a full week yet. Clamp forward to the
+    // week the record starts in — partial, and labelled as such.
+    const earliestStart = Object.values(scopeStarts).sort()[0] ?? null;
+    let week = asOf ? reviewWeek(asOf) : null;
+    let firstWeek = false;
+    if (week !== null && earliestStart !== null && week.to < earliestStart) {
+      week = reviewWeek(fridayOnOrAfter(earliestStart));
+      firstWeek = true;
+    }
+
+    const closed = visible.filter((t) => t.status === 'closed');
+    const openTrades = visible.filter((t) => t.status === 'open');
     const inWeek = (t: ReviewTrade) =>
       week !== null && t.final_exit_date !== null &&
       t.final_exit_date >= week.from && t.final_exit_date <= week.to;
@@ -648,14 +690,8 @@ export function readReview(dbPath: string, opts: { asOf?: string; selected?: str
     const weekTrades = closed.filter(inWeek);
     const stragglers = closed.filter((t) => !inWeek(t) && !t.reviewed_at);
 
-    // Scope Start filters the *aggregates only* (ADR 0008). §11.3's rule holds —
-    // "a list is not an aggregate" — so a pre-boundary Trade you are still
-    // holding stays in the lists below, where you manage it, and only stops
-    // contributing to a count. Filtering the list instead would make the open
-    // positions vanish from the surface that exists to work them.
-    const scopeStarts = readScopeStarts(db);
-    const inScope = (t: ReviewTrade) =>
-      t.entry_date >= (scopeStarts[t.book] ?? '0000-01-01');
+    // Open Trades are never part of the week's counts (§11.3), so the exception
+    // above cannot leak a pre-boundary Trade into a number.
     const counts = ['US', 'IDX'].map((b) =>
       countFor(b, weekTrades.filter((t) => t.book === b && inScope(t))));
     const banner = buildBanner(db, closed, openTrades, asOf);
@@ -671,7 +707,9 @@ export function readReview(dbPath: string, opts: { asOf?: string; selected?: str
       as_of: asOf,
       week_from: week?.from ?? null,
       week_to: week?.to ?? null,
-      week_label: week ? weekLabel(week.from, week.to) : 'No review week',
+      week_label: week
+        ? weekLabel(week.from, week.to) + (firstWeek ? ' · first week of the record' : '')
+        : 'No review week',
       weekTrades, stragglers, openTrades, counts, banner, selected,
     };
   } finally {
