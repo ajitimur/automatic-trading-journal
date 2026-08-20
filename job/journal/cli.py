@@ -348,6 +348,26 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_no_stop(args: argparse.Namespace) -> int:
+    """Record a Trade as deliberately stop-less (ADR 0010)."""
+    db_path = args.db or db.default_db_path()
+    conn = db.connect(db_path)
+    try:
+        for trade_id in args.trade_id:
+            stops.decline_stop(conn, trade_id)
+    except (stops.UnknownTrade, stops.FrozenError) as exc:
+        print(f"decline refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    ids = ", ".join(str(t) for t in args.trade_id)
+    print(
+        f"Trade(s) {ids} recorded as deliberately stop-less — "
+        "no Risk % and no R, permanently once frozen"
+    )
+    return 0
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
@@ -801,6 +821,16 @@ def build_parser() -> argparse.ArgumentParser:
     stop_p.add_argument("price", type=float, help="the stop price")
     _add_db_argument(stop_p)
     stop_p.set_defaults(func=cmd_stop)
+
+    no_stop_p = sub.add_parser(
+        "no-stop",
+        help="record a committed Trade as deliberately stop-less (ADR 0010)",
+    )
+    no_stop_p.add_argument(
+        "trade_id", type=int, nargs="+", help="the Trade id(s) going without a stop"
+    )
+    _add_db_argument(no_stop_p)
+    no_stop_p.set_defaults(func=cmd_no_stop)
 
     setup_p = sub.add_parser(
         "setup",

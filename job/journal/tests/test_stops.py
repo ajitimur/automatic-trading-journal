@@ -265,3 +265,64 @@ class StopAboveEntryTest(unittest.TestCase):
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 0
         )
+
+
+class DeclineStopTest(unittest.TestCase):
+    """Answering the stop question on an already-committed Trade (ADR 0010)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _trade(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "BRMS", 100, 650.0, "2026-08-18T09:30:00-04:00"),
+        ])
+        trades.confirm(self.conn)
+        return self.conn.execute("SELECT id FROM trade").fetchone()["id"]
+
+    def test_declining_records_the_choice_without_deleting_anything(self):
+        tid = self._trade()
+        stops.decline_stop(self.conn, tid)
+        row = self.conn.execute(
+            "SELECT stop, stop_declined FROM trade WHERE id = ?", (tid,)
+        ).fetchone()
+        self.assertIsNone(row["stop"])
+        self.assertEqual(row["stop_declined"], 1)
+        # The Trade and its Fills are untouched — a decline is not a deletion.
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 1
+        )
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"], 1
+        )
+
+    def test_a_declined_trade_is_no_longer_nagged(self):
+        from journal import nags
+        tid = self._trade()
+        before = [n for n in nags.gather(self.conn, "2026-08-20") if n.kind == "missing_stop"]
+        self.assertTrue(before)
+
+        stops.decline_stop(self.conn, tid)
+        after = [n for n in nags.gather(self.conn, "2026-08-20") if n.kind == "missing_stop"]
+        self.assertFalse(after, "an answered question must stop being asked")
+
+    def test_a_stop_later_clears_the_decline(self):
+        tid = self._trade()
+        stops.decline_stop(self.conn, tid)
+        stops.set_stop(self.conn, tid, 630.0)
+        row = self.conn.execute(
+            "SELECT stop, stop_declined FROM trade WHERE id = ?", (tid,)
+        ).fetchone()
+        self.assertEqual(row["stop"], 630.0)
+        self.assertEqual(row["stop_declined"], 0)
+
+    def test_declining_after_freeze_is_refused(self):
+        tid = self._trade()
+        stops.freeze(self.conn, tid)
+        with self.assertRaises(stops.FrozenError):
+            stops.decline_stop(self.conn, tid)

@@ -192,6 +192,24 @@ def set_stop(
     return provenance
 
 
+def decline_stop(conn: sqlite3.Connection, trade_id: int) -> None:
+    """Record that this Trade goes without a stop, deliberately (ADR 0010).
+
+    The confirm door demands an answer before a *new* Trade lands, but a Trade
+    committed before that door existed — or one whose stop the trader has since
+    given up on recalling — can only be answered here. It is the same answer:
+    the hole is on the record as chosen rather than sitting in the nag forever
+    as an open question nobody will close.
+
+    Not a deletion and not a judgement. The Fills stay, the Trade stays, its
+    Exits stay; what changes is that the journal stops asking. Reversible until
+    freeze — supplying a stop clears the decline.
+    """
+    _require_unfrozen(conn, trade_id, "stop")
+    conn.execute("UPDATE trade SET stop_declined = 1 WHERE id = ?", (trade_id,))
+    conn.commit()
+
+
 def set_setup(conn: sqlite3.Connection, trade_id: int, setup: str) -> None:
     """Set the setup, bounded to the three-value vocabulary. Refused once frozen."""
     if setup not in SETUP_VOCABULARY:

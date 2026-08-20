@@ -670,7 +670,11 @@ def confirm(
             continue
         if p.symbol in stops_by_symbol:
             stops.set_stop(conn, trade_id, stops_by_symbol[p.symbol])
-        else:
+        elif p.symbol in declined_set:
+            # Only an explicit decline marks the flag. Absence of a stop is not
+            # a decline — without the demand on, "no stop supplied" is simply a
+            # Trade nobody was asked about, and flagging it would silence the
+            # nag for a question that was never put.
             conn.execute(
                 "UPDATE trade SET stop_declined = 1 WHERE id = ?", (trade_id,)
             )
