@@ -217,12 +217,21 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(f"confirm failed: {exc}", file=sys.stderr)
             return 2
-        result = trades.confirm(
-            conn,
-            stops_by_symbol=stops_by_symbol,
-            declined=args.no_stop,
-            demand_stop=True,
-        )
+        try:
+            result = trades.confirm(
+                conn,
+                stops_by_symbol=stops_by_symbol,
+                declined=args.no_stop,
+                demand_stop=True,
+            )
+        except stops.StopAboveEntry as exc:
+            # Refuse the batch rather than land a Trade whose R would be inverted
+            # from the moment it commits. The Fills are untouched; fix the number
+            # and re-run.
+            print(f"confirm refused: {exc}", file=sys.stderr)
+            print("nothing committed — correct the stop and confirm again",
+                  file=sys.stderr)
+            return 1
     finally:
         conn.close()
     # The demand, stated with the exact commands that answer it (ADR 0010).
@@ -298,9 +307,9 @@ def cmd_stop(args: argparse.Namespace) -> int:
     conn = db.connect(db_path)
     try:
         provenance = stops.set_stop(conn, args.trade_id, args.price)
-    except (stops.UnknownTrade, stops.FrozenError) as exc:
-        # Setting a stop is an explicit operator action: a missing Trade or a
-        # frozen one is a refusal to surface, not something to swallow.
+    except (stops.UnknownTrade, stops.FrozenError, stops.StopAboveEntry) as exc:
+        # Setting a stop is an explicit operator action: a missing Trade, a frozen
+        # one, or a stop above entry is a refusal to surface, not to swallow.
         print(f"stop refused: {exc}", file=sys.stderr)
         return 1
     finally:

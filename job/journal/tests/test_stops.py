@@ -210,3 +210,58 @@ class StopsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopAboveEntryTest(unittest.TestCase):
+    """A stop at or above entry is impossible on a long, and fails loudly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _trade(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "FPNI", 100, 458.0, "2026-08-19T09:30:00-04:00"),
+        ])
+        trades.confirm(self.conn)
+        return self.conn.execute("SELECT id FROM trade").fetchone()["id"]
+
+    def test_a_fat_fingered_decimal_is_refused(self):
+        """The real case: 430 typed as 4300 on a Rp458 entry."""
+        tid = self._trade()
+        with self.assertRaises(stops.StopAboveEntry):
+            stops.set_stop(self.conn, tid, 4300.0)
+        self.assertIsNone(
+            self.conn.execute("SELECT stop FROM trade").fetchone()["stop"]
+        )
+
+    def test_a_stop_equal_to_entry_is_refused(self):
+        # Not merely wrong — (entry − stop) is zero, so R divides by zero.
+        tid = self._trade()
+        with self.assertRaises(stops.StopAboveEntry):
+            stops.set_stop(self.conn, tid, 458.0)
+
+    def test_a_stop_below_entry_is_accepted(self):
+        tid = self._trade()
+        self.assertEqual(stops.set_stop(self.conn, tid, 430.0), stops.RECORDED)
+
+    def test_confirm_refuses_before_committing_anything(self):
+        """The batch must be atomic: set_stop commits, so validate up front."""
+        fills.insert_fills(self.conn, [
+            _buy("b1", "AAA", 100, 100.0, "2026-08-19T09:30:00-04:00"),
+            _buy("b2", "BBB", 100, 200.0, "2026-08-19T09:30:00-04:00"),
+        ])
+        with self.assertRaises(stops.StopAboveEntry):
+            trades.confirm(
+                self.conn,
+                stops_by_symbol={"AAA": 90.0, "BBB": 900.0},  # BBB is the bad one
+                demand_stop=True,
+            )
+        # AAA's stop was fine, but nothing lands while the batch contains a bad one.
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 0
+        )

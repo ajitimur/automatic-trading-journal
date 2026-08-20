@@ -617,6 +617,21 @@ def confirm(
     result = ConfirmResult()
     proposals = propose(conn)
 
+    # Validate every supplied stop against its proposal's derived entry price
+    # *before* landing anything. `stops.set_stop` commits as it goes, so raising
+    # part-way through would leave some Trades committed and others not — and the
+    # whole point of the guard is that a bad stop never reaches the store.
+    for p in proposals:
+        if p.kind != "new-trade" or p.symbol not in stops_by_symbol:
+            continue
+        stop = stops_by_symbol[p.symbol]
+        if p.avg_price and stop >= p.avg_price:
+            raise stops.StopAboveEntry(
+                f"{p.symbol} {p.entry_date}: stop {stop:g} is at or above the "
+                f"entry price {p.avg_price:g} — on a long that inverts every R "
+                "the Trade produces"
+            )
+
     # Land new Trades first so exits in the same batch have a Trade to hit.
     answered: List[Proposal] = []
     for p in proposals:

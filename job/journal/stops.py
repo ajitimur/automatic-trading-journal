@@ -64,6 +64,22 @@ class UnknownSetup(ValueError):
     """A setup outside the fixed three-value vocabulary (SPEC §3.2)."""
 
 
+class StopAboveEntry(ValueError):
+    """A stop at or above the Trade's entry price — impossible on a long.
+
+    Every Trade in this journal is long, so the stop sits below the entry by
+    construction: `entry_avg_price − stop` is the risk, and it must be positive.
+
+    The guard exists because the failure is **silent, not loud**. A stop above
+    entry inverts the sign of every R the Trade produces — a winner reads as a
+    loss — and a stop *equal* to entry divides by zero. Neither announces itself;
+    they surface much later as a distribution that quietly disagrees with the
+    trader's memory. A fat-fingered decimal (430 typed as 4300) is exactly the
+    shape this catches, and it is caught at the moment of entry when the trader
+    still remembers what they meant.
+    """
+
+
 def _row(conn: sqlite3.Connection, trade_id: int) -> sqlite3.Row:
     row = conn.execute(
         "SELECT id, frozen FROM trade WHERE id = ?", (trade_id,)
@@ -153,6 +169,16 @@ def set_stop(
     and so a backfilled run reproduces.
     """
     _require_unfrozen(conn, trade_id, "stop")
+    entry = conn.execute(
+        "SELECT entry_avg_price FROM trade WHERE id = ?", (trade_id,)
+    ).fetchone()["entry_avg_price"]
+    # Guarded only against a real entry price: a cohort still deriving reads 0,
+    # and refusing there would block a legitimate stop for no reason.
+    if entry and stop >= entry:
+        raise StopAboveEntry(
+            f"stop {stop:g} is at or above the entry price {entry:g} — "
+            "on a long that inverts every R the Trade produces"
+        )
     as_of = as_of or date.today().isoformat()
     provenance = _derive_provenance(conn, trade_id, as_of)
     # A stop arriving clears the decline: the trader changed their mind, and a
