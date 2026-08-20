@@ -242,7 +242,9 @@ So: you are not re-confirming the same misparse — but only for the class of mi
 
 **The nag lives in the daily job, not the confirm queue** — the queue is for decisions on new information, not a standing to-do list. It surfaces in the review surface's banner ([§11.4](#114-the-attention-banner)). Provenance falls out of *when* the stop arrives, not anything typed.
 
-> **This bet lost, and the loss is recorded rather than papered over.** Over 207 Trades the chaseable path produced **zero** stops and froze 116 holes shut — the live risk §11.4 flagged, realized. [ADR 0009](docs/adr/0009-stops-are-never-backfilled.md) keeps the stop out of the queue's commit gate but adds a 3-trading-day grace window so a promptly-entered stop still counts, and rules backfill out entirely. Whether the queue should *demand* the stop with an explicit decline is open work, not settled here.
+> **This bet lost, and the reversal is recorded rather than papered over.** Over 207 Trades the chaseable path produced **zero** stops and froze 116 holes shut — the live risk §11.4 flagged, realized.
+>
+> **Confirm now demands the stop** ([ADR 0010](docs/adr/0010-confirm-demands-the-stop.md)): a new Trade commits only once answered with `--stop SYMBOL=PRICE` or `--no-stop SYMBOL`, the latter recording that the hole was chosen. What is demanded is an *answer*, not a stop — declining stays a keystroke, so §5.5's friction argument is bounded rather than dismissed, and an unanswered Trade is held rather than rejected, leaving §5.7's "the fills are facts" intact. A declined Trade is no longer nagged. [ADR 0009](docs/adr/0009-stops-are-never-backfilled.md) adds the 3-trading-day grace window and rules backfill out entirely.
 
 ### 5.6 Where the brokers differ
 

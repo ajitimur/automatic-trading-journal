@@ -268,7 +268,7 @@ def execute_run(conn, as_of: Optional[str] = None) -> RunResult:
 
     # The nags ride the same run (§11.4): stated facts, recorded then read off the
     # banner on next open. Gathered once over the enriched store, not per book.
-    run_nags = nags.gather(conn)
+    run_nags = nags.gather(conn, as_of)
     for n in run_nags:
         conn.execute(
             "INSERT INTO run_nag (run_id, book, kind, detail) VALUES (?, ?, ?, ?)",

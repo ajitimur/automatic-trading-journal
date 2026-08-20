@@ -172,7 +172,17 @@ class CliTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 0)
         conn.close()
 
+        # The stop is demanded at the door now (ADR 0010): the same confirm that
+        # silently committed a stop-less Trade holds it until asked.
         code, out = self._confirm()
+        self.assertEqual(code, 0)
+        self.assertIn("0 new Trade", out)
+
+        conn = db.connect(self.db_path)
+        self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 0)
+        conn.close()
+
+        code, out = self._confirm("--stop", "AAA=9.5")
         self.assertEqual(code, 0)
         self.assertIn("1 new Trade", out)
 
@@ -180,9 +190,69 @@ class CliTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 1)
         conn.close()
 
+    # ── The stop is demanded at the door, answerable two ways (ADR 0010) ──
+    def test_confirm_names_the_held_trade_and_how_to_answer(self):
+        self._seed_buy()
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            main(["confirm", "--db", self.db_path])
+        msg = err.getvalue()
+        self.assertIn("US AAA 2026-08-03", msg)   # which Trade is waiting
+        self.assertIn("--stop SYMBOL=PRICE", msg)  # and both ways to answer it
+        self.assertIn("--no-stop SYMBOL", msg)
+
+    def test_a_declined_stop_commits_and_is_recorded(self):
+        self._seed_buy()
+        code, out = self._confirm("--no-stop", "AAA")
+        self.assertEqual(code, 0)
+        self.assertIn("1 new Trade", out)
+
+        conn = db.connect(self.db_path)
+        row = conn.execute("SELECT stop, stop_declined FROM trade").fetchone()
+        conn.close()
+        self.assertIsNone(row["stop"])       # the hole is real
+        self.assertEqual(row["stop_declined"], 1)  # and it was chosen, not missed
+
+    def test_a_stop_supplied_at_confirm_lands_recorded(self):
+        self._seed_buy()
+        self._confirm("--stop", "AAA=9.5")
+        conn = db.connect(self.db_path)
+        row = conn.execute("SELECT stop, stop_provenance, stop_declined FROM trade").fetchone()
+        conn.close()
+        self.assertEqual(row["stop"], 9.5)
+        # No Exit can precede a Trade's own commit, so this is always 'recorded'.
+        self.assertEqual(row["stop_provenance"], "recorded")
+        self.assertEqual(row["stop_declined"], 0)
+
+    def test_declining_is_not_a_door_that_locks(self):
+        """A declined Trade can still take a stop later — the decline clears."""
+        self._seed_buy()
+        self._confirm("--no-stop", "AAA")
+        tid = self._trade_id()
+        with redirect_stdout(io.StringIO()):
+            main(["stop", str(tid), "9.0", "--db", self.db_path])
+
+        conn = db.connect(self.db_path)
+        row = conn.execute("SELECT stop, stop_declined FROM trade").fetchone()
+        conn.close()
+        self.assertEqual(row["stop"], 9.0)
+        self.assertEqual(row["stop_declined"], 0)
+
+    def test_a_held_trade_keeps_its_fills_and_re_proposes(self):
+        self._seed_buy()
+        self._confirm()  # unanswered — held
+
+        conn = db.connect(self.db_path)
+        self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"], 1)
+        conn.close()
+
+        code, out = self._confirm("--no-stop", "AAA")  # answered on the next pass
+        self.assertEqual(code, 0)
+        self.assertIn("1 new Trade", out)
+
     def test_bulk_confirm_commits_exits_only(self):
         self._seed_buy()
-        self._confirm()  # land the AAA Trade
+        self._confirm("--stop", "AAA=9.5")  # land the AAA Trade
         conn = db.connect(self.db_path)
         fills.insert_fills(conn, [
             flex.Fill(
@@ -214,7 +284,7 @@ class CliTest(unittest.TestCase):
             )
         ])
         conn.close()
-        self._confirm()
+        self._confirm("--no-stop", "WRNG")
 
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -235,7 +305,7 @@ class CliTest(unittest.TestCase):
 
     def test_stop_and_setup_commands_set_the_hand_entered_fields(self):
         self._seed_buy()
-        self._confirm()
+        self._confirm("--no-stop", "AAA")
         tid = self._trade_id()
 
         buf = io.StringIO()
@@ -259,7 +329,7 @@ class CliTest(unittest.TestCase):
 
     def test_stop_after_freeze_exits_nonzero(self):
         self._seed_buy()
-        self._confirm()
+        self._confirm("--no-stop", "AAA")
         tid = self._trade_id()
         conn = db.connect(self.db_path)
         stops.freeze(conn, tid)

@@ -141,6 +141,26 @@ function tableExists(db: DatabaseSync, name: string): boolean {
   );
 }
 
+// The regime benchmark per book (job/journal/books.py BENCHMARKS). A Book has no
+// calendar of its own — bars are keyed (book, symbol) — and its benchmark trades
+// every day the book is open, so it stands in for one (SPEC §8.1).
+const BENCHMARKS: Record<string, string> = { US: 'QQQ', IDX: '^JKSE' };
+
+// " (7 trading days ago)", or "" when the calendar cannot be counted. Silent
+// rather than approximate: an invented count is worse than a bare date (§11.4).
+function elapsed(db: DatabaseSync, book: string, since: string, asOf: string | null): string {
+  const symbol = BENCHMARKS[book];
+  if (!symbol || !asOf || !tableExists(db, 'bar')) return '';
+  const cached = db
+    .prepare('SELECT COUNT(*) AS n FROM bar WHERE book=? AND symbol=?')
+    .get(book, symbol) as { n: number };
+  if (!cached.n) return '';
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM bar WHERE book=? AND symbol=? AND date>? AND date<=?')
+    .get(book, symbol, since, asOf) as { n: number };
+  return ` (${row.n} trading day${row.n === 1 ? '' : 's'} ago)`;
+}
+
 function inAdr(px: number | null, entry: number, adr_pct: number | null): number | null {
   if (px === null || adr_pct === null || adr_pct === 0) return null;
   return ((px - entry) / entry) * 100 / adr_pct;
@@ -453,6 +473,15 @@ function readOne(db: DatabaseSync, row: Record<string, unknown>, hasCf: boolean,
   };
 }
 
+// Scope Start per book, from the store (ADR 0008). Absent table or absent row
+// means no boundary — a journal that was never restarted counts everything.
+function readScopeStarts(db: DatabaseSync): Record<string, string> {
+  if (!tableExists(db, 'book_scope')) return {};
+  const rows = db.prepare('SELECT book, scope_start FROM book_scope').all() as
+    Array<{ book: string; scope_start: string }>;
+  return Object.fromEntries(rows.map((r) => [r.book, r.scope_start]));
+}
+
 function countFor(book: string, ts: ReviewTrade[]): BookCount {
   const gradeable = ts.filter((t) => t.stop_provenance === 'recorded' && t.chased !== null);
   const band = ts.filter((t) => t.adherence && t.adherence.partial_state !== 'not_applicable');
@@ -478,7 +507,7 @@ function countFor(book: string, ts: ReviewTrade[]): BookCount {
   };
 }
 
-function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[]): BannerItem[] {
+function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[], asOf: string | null): BannerItem[] {
   const items: BannerItem[] = [];
 
   // No stop before freeze — the fuse per item (SPEC §11.4, §3.6).
@@ -520,13 +549,22 @@ function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[
       });
     }
   }
-  if (tableExists(db, 'bar')) {
-    const drop = db.prepare("SELECT MAX(date) AS d FROM bar WHERE book='IDX'").get() as { d: string | null };
-    if (drop.d) items.push({ kind: 'idx_intake', severity: 'info', title: 'IDX intake', body: `last bar drop ${drop.d}.` });
+  // Intake means "when did a hand-dropped TC last land" (SPEC §13.2) — a fact
+  // about the trader's own routine. It was read off `bar` here, which is Yahoo
+  // market data and arrives whether or not anything was dropped, so the banner
+  // reported a healthy intake on a book that had not seen a TC in months.
+  if (tableExists(db, 'raw_document')) {
+    const drop = db
+      .prepare("SELECT MAX(fetched_at) AS d FROM raw_document WHERE book='IDX' AND kind='stockbit-tc'")
+      .get() as { d: string | null };
+    const body = drop.d
+      ? `last drop ${drop.d.slice(0, 10)}${elapsed(db, 'IDX', drop.d.slice(0, 10), asOf)}.`
+      : 'no drop recorded.';
+    items.push({ kind: 'idx_intake', severity: 'info', title: 'IDX intake', body });
   }
   if (tableExists(db, 'equity_snapshot')) {
     const eq = db.prepare("SELECT MAX(date) AS d FROM equity_snapshot WHERE book='IDX'").get() as { d: string | null };
-    if (eq.d) items.push({ kind: 'idx_equity', severity: 'info', title: 'IDX equity', body: `last snapshot ${eq.d}.` });
+    if (eq.d) items.push({ kind: 'idx_equity', severity: 'info', title: 'IDX equity', body: `last snapshot ${eq.d}${elapsed(db, 'IDX', eq.d, asOf)}.` });
   }
   // Enrichment held for repair — a span check that failed (SPEC §11.4).
   if (tableExists(db, 'bar_fetch')) {
@@ -587,8 +625,17 @@ export function readReview(dbPath: string, opts: { asOf?: string; selected?: str
     const weekTrades = closed.filter(inWeek);
     const stragglers = closed.filter((t) => !inWeek(t) && !t.reviewed_at);
 
-    const counts = ['US', 'IDX'].map((b) => countFor(b, weekTrades.filter((t) => t.book === b)));
-    const banner = buildBanner(db, closed, openTrades);
+    // Scope Start filters the *aggregates only* (ADR 0008). §11.3's rule holds —
+    // "a list is not an aggregate" — so a pre-boundary Trade you are still
+    // holding stays in the lists below, where you manage it, and only stops
+    // contributing to a count. Filtering the list instead would make the open
+    // positions vanish from the surface that exists to work them.
+    const scopeStarts = readScopeStarts(db);
+    const inScope = (t: ReviewTrade) =>
+      t.entry_date >= (scopeStarts[t.book] ?? '0000-01-01');
+    const counts = ['US', 'IDX'].map((b) =>
+      countFor(b, weekTrades.filter((t) => t.book === b && inScope(t))));
+    const banner = buildBanner(db, closed, openTrades, asOf);
 
     // Default selection: first week trade, else first straggler, else first open.
     const pool = [...weekTrades, ...stragglers, ...openTrades];

@@ -16,9 +16,18 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
+-- Scope Start per book (ADR 0008): the date from which this Book's Trades count.
+-- Trades entered earlier stay stored and readable and their Exits still allocate
+-- — they simply enter no count, no aggregate and no export. Absent row means no
+-- boundary, which is the right default for a journal never restarted.
+CREATE TABLE IF NOT EXISTS book_scope (
+    book        TEXT PRIMARY KEY,
+    scope_start TEXT NOT NULL          -- ISO date, inclusive
+);
+
 -- Per-book cursor: how far each book has been advanced (SPEC §13.1). NULL
 -- last_processed_trading_date means the book has never been processed.
 CREATE TABLE IF NOT EXISTS book_cursor (
@@ -123,6 +132,7 @@ CREATE TABLE IF NOT EXISTS trade (
     frozen          INTEGER NOT NULL DEFAULT 0,     -- 1 once the freeze fuse locks the hand-entered fields
     reviewed_at     TEXT,                           -- review-surface stamp (#40), NULL until *Reviewed →*
     note            TEXT,                           -- review-surface free-text note (#40), not freeze-locked
+    stop_declined   INTEGER NOT NULL DEFAULT 0,     -- confirm asked for a stop and the trader declined (ADR 0010)
     UNIQUE (book, symbol, entry_date)
 );
 
@@ -566,6 +576,9 @@ _TRADE_COLUMNS = {
     # non-destructive ALTER; neither is locked by freeze (SPEC §11.3).
     "reviewed_at": "TEXT",
     "note": "TEXT",
+    # The stop demanded at confirm, answered either way (ADR 0010). 1 means the
+    # trader was asked and chose the permanent hole; the nag then leaves it alone.
+    "stop_declined": "INTEGER NOT NULL DEFAULT 0",
 }
 
 

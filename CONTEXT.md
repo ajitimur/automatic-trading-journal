@@ -64,6 +64,10 @@ _Avoid_: VWAP (that means the market's intraday benchmark, not this), average fi
 Why a particular Exit happened, drawn from a fixed vocabulary. Proposed by enrichment from the daily bars, then confirmed or overridden by the trader.
 _Avoid_: Exit type, sell reason
 
+**Declined Stop**:
+A Trade committed without a stop after the trader was asked for one and said no. The distinction it draws is between a hole that was chosen and a hole nobody noticed — the second is what the journal filled up with when the question was never put. It settles nothing about the Trade's outcome and buys no forgiveness: the R is still absent and still becomes permanent at freeze. It only means the cost was known at the time. Reversible until freeze, and a stop arriving un-declines it.
+_Avoid_: Skipped, waived, no-stop flag, opt-out
+
 **Stop Provenance**:
 Whether a Trade's stop was set early enough to be believed, or late enough to be suspect. Derived from timestamps, never entered. A stop set before the Trade's first Exit is recorded, and so is one set within a few trading days of entry even if an Exit has landed — a Trade that opens and closes inside a week would otherwise be unjudgeable no matter how promptly its stop arrived. Past that window it is reconstructed, and excluded from the judgements hindsight would flatter. The window is why recorded means *set while it was still early*, not *set before the outcome was known*.
 _Avoid_: Confidence, backdated flag

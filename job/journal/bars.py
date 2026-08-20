@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Protocol, Sequence, Tuple
 
+from . import books
+
 
 @dataclass(frozen=True)
 class Bar:
@@ -83,6 +85,34 @@ class SpanCheck:
     rows_fetched: int
     zero_volume_filtered: int
     detail: str
+
+
+def book_trading_days_between(conn, book: str, *, after: str, through: str) -> Optional[int]:
+    """Trading days on a Book's own calendar, exclusive of ``after``.
+
+    A Book has no calendar of its own — bars are keyed ``(book, symbol)``, which
+    is a *symbol's* calendar, and counting distinct dates across every symbol
+    would let a suspension or a thin cache distort the answer. The Book's
+    **benchmark** is the honest stand-in: it is the index the trader watches
+    (SPEC §8.1) and it trades every day the book is open.
+
+    ``None`` when the benchmark has no bars cached, so a caller states a plain
+    date rather than an elapsed count it cannot substantiate.
+    """
+    symbol = books.BENCHMARKS.get(book)
+    if symbol is None:
+        return None
+    cached = conn.execute(
+        "SELECT COUNT(*) AS n FROM bar WHERE book = ? AND symbol = ?",
+        (book, symbol),
+    ).fetchone()["n"]
+    if not cached:
+        return None
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM bar "
+        "WHERE book = ? AND symbol = ? AND date > ? AND date <= ?",
+        (book, symbol, after, through),
+    ).fetchone()["n"]
 
 
 def trading_days(raw: Sequence[Bar]) -> List[Bar]:

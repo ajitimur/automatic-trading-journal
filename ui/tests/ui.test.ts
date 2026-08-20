@@ -47,7 +47,9 @@ function seedConfirmedTrade(dbPath: string): void {
     env: { ...process.env, PYTHONPATH: JOB_DIR },
     stdio: 'pipe',
   });
-  execFileSync('python3', ['-m', 'journal', 'confirm', '--db', dbPath], {
+  // The stop is demanded at the door (ADR 0010); these fixtures decline, then
+  // set the stop through the real `journal stop` command where they need one.
+  execFileSync('python3', ['-m', 'journal', 'confirm', '--no-stop', 'AAA', '--db', dbPath], {
     cwd: JOB_DIR,
     env: { ...process.env, PYTHONPATH: JOB_DIR },
     stdio: 'pipe',

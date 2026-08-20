@@ -155,8 +155,11 @@ def set_stop(
     _require_unfrozen(conn, trade_id, "stop")
     as_of = as_of or date.today().isoformat()
     provenance = _derive_provenance(conn, trade_id, as_of)
+    # A stop arriving clears the decline: the trader changed their mind, and a
+    # Trade that has a stop is not one that went without (ADR 0010). Declining is
+    # a decision about *this moment*, never a door that locks behind you.
     conn.execute(
-        "UPDATE trade SET stop = ?, stop_provenance = ? WHERE id = ?",
+        "UPDATE trade SET stop = ?, stop_provenance = ?, stop_declined = 0 WHERE id = ?",
         (stop, provenance, trade_id),
     )
     conn.commit()

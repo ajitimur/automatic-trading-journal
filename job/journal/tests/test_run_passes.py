@@ -141,6 +141,43 @@ class NagsTest(unittest.TestCase):
         self.assertNotIn("no drop recorded", intake.detail)
         conn.close()
 
+    # ── The elapsed count is measured on the book's own calendar (§11.4) ──
+    def test_intake_nag_states_trading_days_elapsed(self):
+        conn = db.connect(self.db_path)
+        db.record_raw_document(
+            conn, book=books.IDX, kind="stockbit-tc",
+            fetched_at="2026-08-11T02:00:00+00:00", content="<tc text>",
+        )
+        # The IDX benchmark's bars *are* the book's calendar. Only three days in
+        # this stretch were trading days, so a 9-calendar-day gap reads as 3.
+        for d in ("2026-08-12", "2026-08-13", "2026-08-14"):
+            conn.execute(
+                "INSERT INTO bar (book, symbol, date, open, high, low, close, volume) "
+                "VALUES (?, ?, ?, 10, 11, 9, 10, 1000)",
+                (books.IDX, books.BENCHMARKS[books.IDX], d),
+            )
+        conn.commit()
+        result = execute_run(conn, as_of="2026-08-20")
+
+        (intake,) = [n for n in result.nags if n.kind == "idx_intake"]
+        self.assertIn("last drop 2026-08-11", intake.detail)
+        self.assertIn("(3 trading days ago)", intake.detail)
+        conn.close()
+
+    # ── With no benchmark bars the count is omitted, never guessed ──
+    def test_intake_nag_omits_the_count_it_cannot_substantiate(self):
+        conn = db.connect(self.db_path)
+        db.record_raw_document(
+            conn, book=books.IDX, kind="stockbit-tc",
+            fetched_at="2026-08-11T02:00:00+00:00", content="<tc text>",
+        )
+        result = execute_run(conn, as_of="2026-08-20")
+
+        (intake,) = [n for n in result.nags if n.kind == "idx_intake"]
+        self.assertIn("last drop 2026-08-11", intake.detail)
+        self.assertNotIn("trading day", intake.detail)
+        conn.close()
+
     # ── A hand-typed equity snapshot must not answer the intake question ──
     def test_a_non_tc_idx_document_does_not_satisfy_the_intake_nag(self):
         conn = db.connect(self.db_path)

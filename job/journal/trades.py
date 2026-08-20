@@ -41,7 +41,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
-from . import stockbit
+from . import stockbit, stops
 
 # The eight proposal kinds — every failure path produces one of these, never an
 # exception (SPEC §5.2). Enumerated so a caller can assert the taxonomy is total.
@@ -546,6 +546,11 @@ class ConfirmResult:
     exits_allocated: int = 0
     parked_exits: int = 0
     closed_trades: List[str] = field(default_factory=list)
+    # New Trades held back because the stop demand went unanswered (ADR 0010).
+    # Their Fills stay in the ledger and they re-propose on the next confirm —
+    # nothing is lost, and the answer is one flag away.
+    unanswered: List[str] = field(default_factory=list)
+    stops_declined: int = 0
 
 
 # An override maps a sell's source_ref to the (entry_date, quantity) slices the
@@ -564,6 +569,9 @@ def confirm(
     conn: sqlite3.Connection,
     overrides: Optional[Override] = None,
     reasons: Optional[Reasons] = None,
+    stops_by_symbol: Optional[Mapping[str, float]] = None,
+    declined: Optional[Sequence[str]] = None,
+    demand_stop: bool = False,
 ) -> ConfirmResult:
     """Commit the proposals: land new Trades, apply add-fills/restatements, allocate exits.
 
@@ -573,15 +581,45 @@ def confirm(
     and carry an exit reason. **Blocked items park** — an orphan exit or a sell
     that cannot fully allocate is skipped, never a roadblock (SPEC §5.2). Drift on
     a frozen Trade is surfaced but never applied here (see :func:`apply_drift`).
+
+    **Under ``demand_stop`` the stop is demanded, and answerable two ways**
+    (ADR 0010, reversing SPEC §5.5's chaseable path). A new Trade lands only once
+    its symbol appears in ``stops_by_symbol`` or in ``declined``. What is refused
+    is not a missing stop — it is committing *without answering*: the chaseable
+    path returned zero stops over 207 Trades because "later" was always available
+    and never chosen. Declining is one flag and is recorded, so the hole is a
+    decision on the record rather than an omission nobody sees until freeze.
+
+    An unanswered Trade is **held, not lost**: its Fills are untouched, it
+    re-proposes on the next confirm, and §5.7's "the fills are facts" still holds
+    — the ledger never rejected anything, only the derived Trade waits.
+
+    The demand is **off by default** because it is a property of the door, not of
+    the commit: ``journal confirm`` turns it on, and that is the only way a Trade
+    reaches this function from a human. Leaving the primitive ungated keeps the
+    mechanical concerns — cohorts, FIFO, restatement — testable without every
+    case having to answer a workflow question it is not about. ``stops_by_symbol``
+    is still honoured when the demand is off, so a caller may supply a stop
+    without being forced to.
     """
     overrides = overrides or {}
     reasons = reasons or {}
+    stops_by_symbol = stops_by_symbol or {}
+    declined_set = set(declined or ())
     result = ConfirmResult()
     proposals = propose(conn)
 
     # Land new Trades first so exits in the same batch have a Trade to hit.
+    answered: List[Proposal] = []
     for p in proposals:
         if p.kind != "new-trade":
+            continue
+        if (
+            demand_stop
+            and p.symbol not in stops_by_symbol
+            and p.symbol not in declined_set
+        ):
+            result.unanswered.append(f"{p.book} {p.symbol} {p.entry_date}")
             continue
         cur = conn.execute(
             "INSERT OR IGNORE INTO trade (book, symbol, entry_date, entry_qty, "
@@ -589,6 +627,7 @@ def confirm(
             (p.book, p.symbol, p.entry_date, p.quantity, p.avg_price),
         )
         result.new_trades += cur.rowcount
+        answered.append(p)
 
     result.added_fills = sum(1 for p in proposals if p.kind == "add-fills")
     result.restatements = sum(1 for p in proposals if p.kind == "restatement")
@@ -598,6 +637,22 @@ def confirm(
 
     # Resolve every cohort key to its trade id (committed just now or earlier).
     ids = _trade_ids(conn)
+
+    # Record the answer to the stop demand, now that the Trades have ids. A stop
+    # supplied here derives `recorded` — no Exit can precede a Trade's own commit
+    # (ADR 0009's grace window is for the ones answered a day or two later).
+    for p in answered:
+        trade_id = ids.get((p.book, p.symbol, p.entry_date))
+        if trade_id is None:
+            continue
+        if p.symbol in stops_by_symbol:
+            stops.set_stop(conn, trade_id, stops_by_symbol[p.symbol])
+        else:
+            conn.execute(
+                "UPDATE trade SET stop_declined = 1 WHERE id = ?", (trade_id,)
+            )
+            result.stops_declined += 1
+
     # Working open quantities, so overrides can be bounds-checked as we go.
     open_qty = _working_open_qty(conn)
 
