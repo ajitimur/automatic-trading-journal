@@ -1,9 +1,10 @@
-"""The one real HTTP transport for the Flex client (SPEC §13.3, issue #25).
+"""The one real HTTP transport, for the Flex client and the relay (SPEC §13.3).
 
 :class:`FlexClient` depends on the :class:`~journal.flex_client.Transport` seam,
-never on this module — the way the bar pipeline depends on ``BarFetcher`` and
-not on yfinance. This is the single concrete implementation; no second transport
-is written speculatively.
+and :class:`~journal.relay_client.RelayClient` on its own, never on this module
+— the way the bar pipeline depends on ``BarFetcher`` and not on yfinance. This
+is the single concrete implementation behind both; the relay talks to a host
+behind the same ISP, so it gets the same pinning (ADR 0011).
 
 **The socket connects to the address DoH returned.** §13.3 says resolution is
 "not a VPN and not the system resolver"; an earlier transport resolved over DoH
@@ -31,7 +32,7 @@ import http.client
 import socket
 import ssl
 import urllib.parse
-from typing import Sequence
+from typing import Mapping, Optional, Sequence
 
 from .flex_client import HttpResponse, InterceptionError
 
@@ -63,7 +64,23 @@ class PinnedTransport:
         self._context = ssl.create_default_context()
 
     def get(self, url: str, addresses: Sequence[str]) -> HttpResponse:
-        """Fetch ``url``, connecting to one of ``addresses``.
+        """Fetch ``url``, connecting to one of ``addresses``."""
+        return self.request("GET", url, addresses)
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        addresses: Sequence[str],
+        *,
+        headers: Optional[Mapping[str, str]] = None,
+        body: Optional[bytes] = None,
+    ) -> HttpResponse:
+        """Send ``method`` to ``url``, connecting to one of ``addresses``.
+
+        The general form the relay client needs (a bearer header, a POST body);
+        ``Host`` and ``User-Agent`` are always sent. Any 2xx is success, since
+        the relay acknowledges with a 204 and no body.
 
         Each address is tried in turn — Akamai names several edges and one may
         be unroutable — and the first that answers wins. A certificate failure
@@ -87,7 +104,9 @@ class PinnedTransport:
         last_error: Exception | None = None
         for address in addresses:
             try:
-                return self._get_from(host, port, target, address)
+                return self._request_from(
+                    method, host, port, target, address, headers, body
+                )
             except ssl.SSLCertVerificationError as exc:
                 raise InterceptionError(
                     f"{host} resolved over DoH to {list(addresses)}, but the "
@@ -103,25 +122,35 @@ class PinnedTransport:
             f"{last_error}"
         )
 
-    def _get_from(
-        self, host: str, port: int, target: str, address: str
+    def _request_from(
+        self,
+        method: str,
+        host: str,
+        port: int,
+        target: str,
+        address: str,
+        headers: Optional[Mapping[str, str]],
+        body: Optional[bytes],
     ) -> HttpResponse:
-        """One GET against one pinned address, reporting the socket's real peer."""
+        """One request against one pinned address, reporting the socket's real peer."""
         conn = _PinnedHTTPSConnection(
             host, address, port=port, timeout=self._timeout, context=self._context
         )
         try:
             conn.request(
-                "GET", target, headers={"Host": host, "User-Agent": USER_AGENT}
+                method,
+                target,
+                body=body,
+                headers={"Host": host, "User-Agent": USER_AGENT, **(headers or {})},
             )
             response = conn.getresponse()
-            body = response.read().decode("utf-8")
-            if response.status != 200:
+            text = response.read().decode("utf-8")
+            if not 200 <= response.status < 300:
                 raise TransportError(
                     f"{host} answered HTTP {response.status} {response.reason} "
-                    f"from {conn.peer_address}: {body[:_BODY_EXCERPT].strip()}"
+                    f"from {conn.peer_address}: {text[:_BODY_EXCERPT].strip()}"
                 )
-            return HttpResponse(text=body, connected_ip=conn.peer_address)
+            return HttpResponse(text=text, connected_ip=conn.peer_address)
         finally:
             conn.close()
 

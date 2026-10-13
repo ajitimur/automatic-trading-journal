@@ -1,6 +1,7 @@
 """Secrets, resolved through exactly one indirection (SPEC §13.4, §13.7 seam 2).
 
-The job holds exactly one secret: the IBKR Flex token. Every caller goes
+The job holds two secrets: the IBKR Flex token, and the bearer secret the relay
+checks on the Mac's pull and acknowledge (ADR 0011). Every caller goes
 through :func:`resolve_secret` — no code reads an environment variable, a
 keychain or a file path for a secret directly. Swapping the v1 environment
 backend for a keychain or 1Password in v2 is then a change to this one function
@@ -16,6 +17,10 @@ from datetime import date
 # The one secret the job holds (SPEC §13.4), scoped and rotatable. Named, never
 # spelled out at call sites.
 IBKR_FLEX_TOKEN = "ibkr_flex_token"
+
+# The relay's ``MAC_SECRET``: authorises reading and deleting declarations, and
+# nothing else — the relay holds no broker credential (ADR 0011).
+RELAY_MAC_SECRET = "relay_mac_secret"
 
 # The token maxes at one year and currently expires on this date (SPEC §13.4).
 # Kept as a stated fact rather than discovered at failure time: regenerating a

@@ -5,7 +5,12 @@ the present"* — not "process today". So a missed day is not an error, and a ru
 that catches up several days records that it did (§13.1). Advancing moves the
 per-book cursor to the run's as-of date; then, **per book**, the passes run.
 
-**Intake runs first and is never gated**: it pulls the broker's own trade export
+**The relay pass runs once, ahead of the books**: it pulls the trader's Stop
+Declarations from the Telegram relay, files them in the raw archive and records
+them, and only then acknowledges them (ADR 0011). One relay carries both books,
+so its run row sits under no book. Nothing binds yet.
+
+**Fill intake is never gated either**: it pulls the broker's own trade export
 into the Fill ledger (§4.1, US only — the IDX TC is hand-dropped by design,
 §13.2). Fills are facts about what the trader did and do not depend on the bar
 series having caught up. The **enrichment** passes — regime, counterfactual,
@@ -30,7 +35,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from . import backup, bar_sync, books, counterfactual, fills, flex_client, nags, post_exit, regime
+from . import (
+    backup, bar_sync, books, counterfactual, fills, flex_client, nags, post_exit,
+    regime, relay_intake,
+)
 
 
 @dataclass
@@ -46,7 +54,7 @@ class BookOutcome:
 @dataclass
 class PassOutcome:
     book: str
-    name: str    # 'intake' | 'regime' | 'counterfactual' | 'freeze'
+    name: str    # 'relay' | 'bars' | 'intake' | 'regime' | 'counterfactual' | 'freeze'
     status: str  # 'ran' | 'gated' | 'error'
     detail: Optional[str] = None
 
@@ -196,6 +204,41 @@ def _pass_intake(conn, book: str, as_of: str) -> str:
     return f"{inserted} new fill(s) from Flex query {query_id}"
 
 
+def _pass_relay(conn, relay) -> PassOutcome:
+    """Pull the trader's Stop Declarations from the relay and file them (#49).
+
+    Not book-scoped: one relay carries both books, so it runs once per run,
+    ahead of the books, under :data:`relay_intake.NO_BOOK`. Ungated for the
+    same reason Fill intake is: a declaration is a fact about what the trader
+    did, independent of the bar series. A relay that cannot be reached is an
+    error on this row and nothing more; every other pass still runs (§13.6).
+    """
+    if relay is None:
+        return PassOutcome(
+            relay_intake.NO_BOOK, "relay", "ran",
+            "skipped — no relay configured (set JOURNAL_RELAY_URL)",
+        )
+    try:
+        detail = relay_intake.take_in(
+            conn,
+            relay,
+            archive_dir=backup.archive_dir_for(backup.db_path_of(conn)),
+            now=_now_iso(),
+        )
+    except Exception as exc:  # the network path lies (§13.3) — record, never raise
+        return PassOutcome(relay_intake.NO_BOOK, "relay", "error", str(exc))
+    return PassOutcome(relay_intake.NO_BOOK, "relay", "ran", detail)
+
+
+def _record_passes(conn, run_id: int, passes: list[PassOutcome]) -> None:
+    for p in passes:
+        conn.execute(
+            "INSERT INTO run_pass (run_id, book, name, status, detail) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (run_id, p.book, p.name, p.status, p.detail),
+        )
+
+
 _PASSES = (
     ("regime", _pass_regime),
     ("counterfactual", _pass_counterfactual),
@@ -292,13 +335,17 @@ def _run_book_passes(conn, book: str, as_of: str, cache=None) -> list[PassOutcom
     return outcomes
 
 
-def execute_run(conn, as_of: Optional[str] = None, bar_cache=None) -> RunResult:
+def execute_run(
+    conn, as_of: Optional[str] = None, bar_cache=None, relay=None
+) -> RunResult:
     """Run the daily job against an open connection and return the result.
 
     ``as_of`` defaults to today (UTC date). It is injectable so tests and
     backfill can pin the frontier deterministically. ``bar_cache`` is the market
     data seam (§4.4): the CLI wires the real one, and a caller that passes none
-    gets a gated bars pass instead of a socket.
+    gets a gated bars pass instead of a socket. ``relay`` is the same kind of
+    seam for the Telegram relay (ADR 0011); with none, the relay pass records
+    that it was skipped.
     """
     as_of = as_of or datetime.now(timezone.utc).date().isoformat()
     # Validate shape early — an unparseable as-of is a caller bug, not run data.
@@ -312,7 +359,8 @@ def execute_run(conn, as_of: Optional[str] = None, bar_cache=None) -> RunResult:
     run_id = cur.lastrowid
 
     outcomes: list[BookOutcome] = []
-    passes: list[PassOutcome] = []
+    passes: list[PassOutcome] = [_pass_relay(conn, relay)]
+    _record_passes(conn, run_id, passes)
     for book in books.BOOKS:
         try:
             outcome = _advance_book(conn, book, as_of)
@@ -341,12 +389,7 @@ def execute_run(conn, as_of: Optional[str] = None, bar_cache=None) -> RunResult:
             if outcome.status != "error"
             else []
         )
-        for p in book_passes:
-            conn.execute(
-                "INSERT INTO run_pass (run_id, book, name, status, detail) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (run_id, p.book, p.name, p.status, p.detail),
-            )
+        _record_passes(conn, run_id, book_passes)
         passes.extend(book_passes)
 
     # The nags ride the same run (§11.4): stated facts, recorded then read off the
