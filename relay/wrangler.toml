@@ -1,0 +1,15 @@
+# The relay Worker (ADR 0011). Secrets are set with `wrangler secret put`:
+# TELEGRAM_BOT_TOKEN, WEBHOOK_SECRET, MAC_SECRET, TELEGRAM_USER_ID.
+name = "trading-journal-relay"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "trading-journal-relay"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# Daily at 13:00 UTC (20:00 WIB): applies the 30-day TTL.
+[triggers]
+crons = ["0 13 * * *"]

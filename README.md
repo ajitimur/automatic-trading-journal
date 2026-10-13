@@ -125,10 +125,12 @@ npm run job -- restore-check          # restore newest snapshot to scratch, veri
 # diagnostic skeleton (Trades/Fills/latest run). Ctrl-C to exit.
 JOURNAL_DB=job/journal.db npm run ui
 
-npm run typecheck && npm test      # TypeScript UI + Python job
+npm run typecheck && npm test      # TypeScript UI + Python job + relay
 ```
 
 See [`docs/adr/0007-walking-skeleton-stack.md`](docs/adr/0007-walking-skeleton-stack.md) for the stack decision and [`deploy/`](deploy/) for the `launchd` job.
+
+The **relay** ([`relay/`](relay/), ADR 0011) is the one component off the Mac: a Cloudflare Worker that takes Stop Declarations (`BBRI 4120`) from the trader's Telegram bot, replies with how it read them, and holds them until the Mac pulls (`GET /pull`) and acknowledges (`POST /ack`, body `{"ids": [...]}`) with `Authorization: Bearer $MAC_SECRET`. Unacknowledged items expire after 30 days. Its logic lives in `relay/src/relay.ts` over injected dependencies and is tested with `npm run test:relay`; `relay/src/worker.ts` binds it to D1 and the Bot API. The pull payload is pinned by [`docs/samples/relay-pull-fixture.json`](docs/samples/relay-pull-fixture.json).
 
 ## Start here
 

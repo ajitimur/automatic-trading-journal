@@ -15,5 +15,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["ui/**/*.ts"]
+  "include": ["ui/**/*.ts", "relay/**/*.ts"]
 }

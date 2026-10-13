@@ -6,9 +6,10 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run test:py && npm run test:ui",
+    "test": "npm run test:py && npm run test:ui && npm run test:relay",
     "test:py": "cd job && python3 -m unittest discover -s . -p 'test_*.py'",
     "test:ui": "node --test 'ui/tests/**/*.test.ts'",
+    "test:relay": "node --test 'relay/tests/**/*.test.ts'",
     "job": "cd job && PYTHONPATH=. python3 -m journal",
     "ui": "node ui/src/server.ts"
   },

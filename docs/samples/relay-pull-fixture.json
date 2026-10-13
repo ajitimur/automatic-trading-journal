@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "id": "583201001",
+      "telegram_at": "2026-10-13T02:15:00Z",
+      "text": "BBRI 4120",
+      "parse": {
+        "kind": "declaration",
+        "book": "IDX",
+        "symbol": "BBRI",
+        "stop": 4120,
+        "entry_date": "2026-10-13"
+      }
+    },
+    {
+      "id": "583201002",
+      "telegram_at": "2026-10-13T18:00:00Z",
+      "text": "amd 182.5",
+      "parse": {
+        "kind": "declaration",
+        "book": "US",
+        "symbol": "AMD",
+        "stop": 182.5,
+        "entry_date": "2026-10-13"
+      }
+    }
+  ]
+}
