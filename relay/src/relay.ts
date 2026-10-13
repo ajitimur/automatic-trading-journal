@@ -43,7 +43,7 @@ export interface Declaration {
   entry_date: string;
 }
 
-type Parse = Declaration | { kind: 'error'; reason: string };
+type ParseResult = Declaration | { kind: 'error'; reason: string };
 
 // The bits of a Telegram Update the relay reads.
 interface TelegramUpdate {
@@ -81,23 +81,8 @@ export interface RelayStore {
   delete(ids: string[]): Promise<void>;
 }
 
-export function memoryStore(): RelayStore {
-  const items = new Map<string, StoredItem>();
-  return {
-    async put(stored) {
-      if (!items.has(stored.item.id)) items.set(stored.item.id, stored);
-    },
-    async list() {
-      return [...items.values()];
-    },
-    async delete(ids) {
-      for (const id of ids) items.delete(id);
-    },
-  };
-}
-
-// Each Book's exchange time zone: the entry date is the session the message
-// was sent in, not the trader's local date.
+// Each Book's exchange time zone: the entry date is the calendar date there
+// when the message was sent, not the trader's local date.
 const EXCHANGE_TZ: Record<Book, string> = {
   IDX: 'Asia/Jakarta',
   US: 'America/New_York',
@@ -105,17 +90,18 @@ const EXCHANGE_TZ: Record<Book, string> = {
 
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-const USAGE ='Expected: SYMBOL STOP, e.g. BBRI 4120';
+const USAGE = 'Expected: SYMBOL STOP, e.g. BBRI 4120';
 
 export function createRelay(deps: RelayDeps): Relay {
   const { telegram, store, clock, config } = deps;
 
+  // Always 200 once authenticated, except when storing or replying fails:
+  // Telegram retries anything else, and a body it sent once it will send again.
   async function onWebhook(request: Request): Promise<Response> {
-    const update = (await request.json()) as TelegramUpdate;
-    const message = update.message;
-    if (!message || message.from?.id !== config.userId || message.text === undefined) {
-      return new Response(null, { status: 200 });
-    }
+    const ok = new Response(null, { status: 200 });
+    const update = (await readJson(request)) as TelegramUpdate | null;
+    const message = update?.message;
+    if (!update || !message || message.from?.id !== config.userId || typeof message.text !== 'string') return ok;
     const sentAt = new Date(message.date * 1000);
     const parse = parseDeclaration(message.text, sentAt);
     if (parse.kind === 'declaration') {
@@ -125,7 +111,7 @@ export function createRelay(deps: RelayDeps): Relay {
       });
     }
     await telegram.sendMessage(message.chat.id, describe(parse));
-    return new Response(null, { status: 200 });
+    return ok;
   }
 
   // Anything the Mac never acknowledged is deleted after the TTL, so a dead
@@ -146,8 +132,8 @@ export function createRelay(deps: RelayDeps): Relay {
   // Deleting an id the store no longer holds is a no-op, so a repeated
   // acknowledge after a network blip is harmless.
   async function onAcknowledge(request: Request): Promise<Response> {
-    const body = (await request.json()) as { ids?: unknown };
-    const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : null;
+    const body = (await readJson(request)) as { ids?: unknown } | null;
+    const ids = Array.isArray(body?.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : null;
     if (ids === null) return new Response(null, { status: 400 });
     await store.delete(ids);
     return new Response(null, { status: 204 });
@@ -174,6 +160,16 @@ export function createRelay(deps: RelayDeps): Relay {
   };
 }
 
+// The body as a JSON object, or null when it is anything else.
+async function readJson(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await request.json();
+    return typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 // Compares without an early exit on the first differing character, so the
 // response time says nothing about how much of a guess was right.
 function secretMatches(given: string | null, expected: string): boolean {
@@ -186,7 +182,7 @@ function secretMatches(given: string | null, expected: string): boolean {
 }
 
 // `SYMBOL STOP`. A 4-letter symbol is IDX, anything else US.
-function parseDeclaration(text: string, sentAt: Date): Parse {
+function parseDeclaration(text: string, sentAt: Date): ParseResult {
   const words = text.trim().split(/\s+/);
   if (words.length !== 2) return { kind: 'error', reason: USAGE };
   const [rawSymbol, rawStop] = words as [string, string];
@@ -196,6 +192,10 @@ function parseDeclaration(text: string, sentAt: Date): Parse {
   // Plain decimals only: `Number` alone would also take `1e3`, `Infinity` or `0x10`.
   const stop = /^\d+(\.\d+)?$/.test(rawStop) ? Number(rawStop) : NaN;
   if (!(stop > 0)) return { kind: 'error', reason: `Stop must be a positive number, got ${rawStop}` };
+  // IDX trades in whole rupiah, and `4.120` there means 4,120, not 4.12.
+  if (book === 'IDX' && !Number.isInteger(stop)) {
+    return { kind: 'error', reason: `IDX stop must be whole rupiah, got ${rawStop}` };
+  }
   return { kind: 'declaration', book, symbol, stop, entry_date: dateIn(sentAt, EXCHANGE_TZ[book]) };
 }
 
@@ -211,10 +211,10 @@ function isoSeconds(instant: Date): string {
   return instant.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-const PRICE =new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
+const PRICE = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-function describe(parse: Parse): string {
+function describe(parse: ParseResult): string {
   if (parse.kind === 'error') return `✗ ${parse.reason}`;
   const [, month, day] = parse.entry_date.split('-').map(Number) as [number, number, number];
   return `✓ ${parse.book} ${parse.symbol} SL ${PRICE.format(parse.stop)}, entry ${day} ${MONTHS[month - 1]}`;

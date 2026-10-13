@@ -4,8 +4,18 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { ack, harness, mac, pull, PULL_FIXTURE, TRADER, update, webhook, type PullBody } from './harness.ts';
+import {
+  ack,
+  harness,
+  MAC_SECRET,
+  mac,
+  pull,
+  sendFixtureMessages,
+  TRADER,
+  update,
+  webhook,
+  WEBHOOK_SECRET,
+} from './harness.ts';
 
 test('a valid declaration from the trader gets a reply echoing book, symbol, stop and entry date', async () => {
   const h = harness();
@@ -66,7 +76,7 @@ for (const [label, secret] of [
   });
 }
 
-test('a US declaration sent at 01:00 WIB is dated the previous New York session', async () => {
+test('a US declaration sent at 01:00 WIB is dated the previous New York calendar day', async () => {
   const h = harness();
   // 01:00 WIB on 14 Oct is 14:00 in New York on 13 Oct.
   await h.relay.fetch(webhook(update('AMD 182.5', '2026-10-13T18:00:00Z')));
@@ -114,6 +124,40 @@ for (const text of ['BBRI', 'hello there friend', '', '/start', 'BB-RI 4120']) {
   });
 }
 
+// IDX prices are whole rupiah, and Indonesians write 4.120 for four thousand
+// one hundred twenty: reading it as 4.12 would bind a nonsense Stop for good.
+for (const stop of ['4.120', '4120.5']) {
+  test(`an IDX stop with a fraction ("${stop}") gets an error reply and is not stored`, async () => {
+    const h = harness();
+    await h.relay.fetch(webhook(update(`BBRI ${stop}`, '2026-10-13T02:15:00Z')));
+    assert.deepEqual(h.sent.map((m) => m.text), [`✗ IDX stop must be whole rupiah, got ${stop}`]);
+    assert.deepEqual(await pull(h), { items: [] });
+  });
+}
+
+function rawPost(path: string, body: string, headers: Record<string, string>): Request {
+  return new Request(`https://relay.test${path}`, { method: 'POST', headers, body });
+}
+
+test('a webhook body that is not a Telegram update is dropped, not failed, so Telegram stops retrying', async () => {
+  const h = harness();
+  for (const body of ['not json', 'null', '[]']) {
+    const res = await h.relay.fetch(rawPost('/telegram', body, { 'x-telegram-bot-api-secret-token': WEBHOOK_SECRET }));
+    assert.equal(res.status, 200);
+  }
+  assert.deepEqual(h.sent, []);
+  assert.deepEqual(await pull(h), { items: [] });
+});
+
+test('an acknowledge with a malformed body is a 400 and deletes nothing', async () => {
+  const h = harness();
+  await h.relay.fetch(webhook(update('BBRI 4120', '2026-10-13T02:15:00Z')));
+  for (const body of ['not json', 'null', '{"ids": "7001"}']) {
+    const res = await h.relay.fetch(rawPost('/ack', body, { authorization: `Bearer ${MAC_SECRET}` }));
+    assert.equal(res.status, 400);
+  }
+  assert.equal((await pull(h)).items.length, 1);
+});
 
 test('pull returns items in arrival order, and acknowledging removes exactly those', async () => {
   const h = harness();
@@ -166,10 +210,7 @@ test('the scheduled handler deletes expired items even when the Mac never pulls'
 // The pull contract both sides read (#46): the job's tests feed this payload to
 // the Mac side, so the relay must produce exactly it from the same messages.
 test('the relay pulls exactly the shared fixture from the messages it describes', async () => {
-  const fixture = JSON.parse(readFileSync(PULL_FIXTURE, 'utf8')) as PullBody;
   const h = harness('2026-10-14T00:00:00Z');
-  for (const item of fixture.items) {
-    await h.relay.fetch(webhook(update(item.text, item.telegram_at, TRADER, Number(item.id))));
-  }
+  const fixture = await sendFixtureMessages(h);
   assert.deepEqual(await pull(h), fixture);
 });

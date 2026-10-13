@@ -14,16 +14,8 @@ export interface D1Database {
   prepare(sql: string): D1Statement;
 }
 
-// Applied by `wrangler d1 migrations apply` (relay/migrations); repeated here
-// so tests can build the table without wrangler.
-export const SCHEMA = `
-CREATE TABLE IF NOT EXISTS items (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  id TEXT NOT NULL UNIQUE,
-  stored_at TEXT NOT NULL,
-  item TEXT NOT NULL
-)`;
-
+// The `items` table comes from relay/migrations, applied by
+// `wrangler d1 migrations apply`.
 export function d1Store(db: D1Database): RelayStore {
   return {
     async put(stored) {

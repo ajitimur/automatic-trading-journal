@@ -5,13 +5,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { d1Store, SCHEMA, type D1Database, type D1Statement } from '../src/d1Store.ts';
-import { ack, harness, pull, PULL_FIXTURE, TRADER, update, webhook, type PullBody } from './harness.ts';
+import { d1Store, type D1Database, type D1Statement } from '../src/d1Store.ts';
+import { ack, harness, pull, sendFixtureMessages, TRADER, update, webhook } from './harness.ts';
+
+// The same migration `wrangler d1 migrations apply` runs.
+const MIGRATION = join(resolve(import.meta.dirname, '..'), 'migrations', '0001_items.sql');
 
 function sqliteD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  db.exec(SCHEMA);
+  db.exec(readFileSync(MIGRATION, 'utf8'));
   return {
     prepare(sql) {
       const statement = (values: unknown[]): D1Statement => ({
@@ -31,11 +35,8 @@ function sqliteD1(): D1Database {
 const d1Harness = (nowIso?: string) => harness(nowIso, d1Store(sqliteD1()));
 
 test('over D1, the relay pulls exactly the shared fixture', async () => {
-  const fixture = JSON.parse(readFileSync(PULL_FIXTURE, 'utf8')) as PullBody;
   const h = d1Harness('2026-10-14T00:00:00Z');
-  for (const item of fixture.items) {
-    await h.relay.fetch(webhook(update(item.text, item.telegram_at, TRADER, Number(item.id))));
-  }
+  const fixture = await sendFixtureMessages(h);
   assert.deepEqual(await pull(h), fixture);
 });
 
