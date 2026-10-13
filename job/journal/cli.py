@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 from datetime import datetime, timezone
-from typing import List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 from . import backup, books, counterfactual, db, doh, equity, export, fills, flex, flex_client, flex_transport, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
@@ -227,7 +227,9 @@ def _parse_stop_args(pairs: Optional[Sequence[str]]) -> dict:
     return out
 
 
-def _by_trade(proposals: Sequence[trades.Proposal], symbols) -> List[trades.CohortKey]:
+def _cohorts_for_symbols(
+    proposals: Sequence[trades.Proposal], symbols: Iterable[str]
+) -> List[trades.CohortKey]:
     """The new-trade cohorts a symbol argument names — every one sharing it.
 
     ``--stop``/``--no-stop`` speak in symbols; the primitive answers per Trade
@@ -235,7 +237,7 @@ def _by_trade(proposals: Sequence[trades.Proposal], symbols) -> List[trades.Coho
     """
     wanted = set(symbols)
     return [
-        (p.book, p.symbol, p.entry_date)
+        trades.cohort_key(p)
         for p in proposals
         if p.kind == "new-trade" and p.symbol in wanted
     ]
@@ -265,9 +267,9 @@ def cmd_confirm(args: argparse.Namespace) -> int:
                 conn,
                 stops_by_trade={
                     key: stops_by_symbol[key[1]]
-                    for key in _by_trade(proposals, stops_by_symbol)
+                    for key in _cohorts_for_symbols(proposals, stops_by_symbol)
                 },
-                declined=_by_trade(proposals, args.no_stop),
+                declined=_cohorts_for_symbols(proposals, args.no_stop),
                 demand_stop=True,
             )
         except stops.StopAboveEntry as exc:

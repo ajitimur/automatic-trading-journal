@@ -302,8 +302,10 @@ class StopAnswersByCohortTest(unittest.TestCase):
     def test_each_cohort_takes_only_its_own_stop(self):
         result = trades.confirm(
             self.conn,
-            stops_by_trade={("US", "AAA", "2026-08-18"): 95.0,
-                   ("US", "AAA", "2026-08-19"): 75.0},
+            stops_by_trade={
+                ("US", "AAA", "2026-08-18"): 95.0,
+                ("US", "AAA", "2026-08-19"): 75.0,
+            },
             demand_stop=True,
         )
         self.assertEqual(result.new_trades, 2)
@@ -338,8 +340,10 @@ class StopAnswersByCohortTest(unittest.TestCase):
         with self.assertRaises(stops.StopAboveEntry):
             trades.confirm(
                 self.conn,
-                stops_by_trade={("US", "AAA", "2026-08-18"): 90.0,
-                       ("US", "AAA", "2026-08-19"): 90.0},
+                stops_by_trade={
+                    ("US", "AAA", "2026-08-18"): 90.0,
+                    ("US", "AAA", "2026-08-19"): 90.0,
+                },
                 demand_stop=True,
             )
         self.assertEqual(
@@ -376,8 +380,10 @@ class StopAnswersByCohortTest(unittest.TestCase):
         try:
             trades.confirm(
                 self.conn,
-                stops_by_trade={("US", "AAA", "2026-08-18"): 95.0,
-                       ("US", "AAA", "2026-08-19"): 75.0},
+                stops_by_trade={
+                    ("US", "AAA", "2026-08-18"): 95.0,
+                    ("US", "AAA", "2026-08-19"): 75.0,
+                },
                 stop_set_at={("US", "AAA", "2026-08-18"): "2026-08-18T10:02:00-04:00"},
             )
         finally:

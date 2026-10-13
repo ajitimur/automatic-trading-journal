@@ -169,6 +169,27 @@ class CliTest(unittest.TestCase):
             code = main(["confirm", "--db", self.db_path, *extra])
         return code, buf.getvalue()
 
+    def test_one_symbol_argument_answers_every_pending_trade_in_it(self):
+        """The CLI speaks in symbols; the primitive answers per Trade (#47)."""
+        self._seed_buy()
+        conn = db.connect(self.db_path)
+        fills.insert_fills(conn, [
+            flex.Fill(
+                source="ibkr", source_ref="b2", revision=1, book="US",
+                symbol="AAA", side="BUY", quantity=100.0, price=11.0,
+                commission=0.0, executed_at="2026-08-04T09:30:00-04:00", order_id="o2",
+            )
+        ])
+        conn.close()
+
+        code, out = self._confirm("--stop", "AAA=9.5")
+        self.assertEqual(code, 0)
+        self.assertIn("2 new Trade", out)
+        conn = db.connect(self.db_path)
+        stops_set = [r["stop"] for r in conn.execute("SELECT stop FROM trade")]
+        conn.close()
+        self.assertEqual(stops_set, [9.5, 9.5])
+
     def test_confirm_dry_run_commits_nothing_then_confirm_lands_the_trade(self):
         self._seed_buy()
 

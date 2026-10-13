@@ -601,8 +601,9 @@ def confirm(
     its cohort key appears in ``stops_by_trade`` or in ``declined``. What is
     refused is not a missing stop — it is committing *without answering*: the
     chaseable path returned zero stops over 207 Trades because "later" was
-    always available and never chosen. Declining is one flag and is recorded, so the hole is a
-    decision on the record rather than an omission nobody sees until freeze.
+    always available and never chosen. Declining is one flag and is recorded,
+    so the hole is a decision on the record rather than an omission nobody sees
+    until freeze.
 
     An unanswered Trade is **held, not lost**: its Fills are untouched, it
     re-proposes on the next confirm, and §5.7's "the fills are facts" still holds
@@ -624,7 +625,7 @@ def confirm(
     """
     overrides = overrides or {}
     reasons = reasons or {}
-    stops_by_key = stops_by_trade or {}
+    stops_by_trade = stops_by_trade or {}
     declined_set = set(declined or ())
     stop_set_at = stop_set_at or {}
     result = ConfirmResult()
@@ -635,9 +636,9 @@ def confirm(
     # part-way through would leave some Trades committed and others not — and the
     # whole point of the guard is that a bad stop never reaches the store.
     for p in proposals:
-        if p.kind != "new-trade" or _key(p) not in stops_by_key:
+        if p.kind != "new-trade" or cohort_key(p) not in stops_by_trade:
             continue
-        stop = stops_by_key[_key(p)]
+        stop = stops_by_trade[cohort_key(p)]
         if p.avg_price and stop >= p.avg_price:
             raise stops.StopAboveEntry(
                 f"{p.symbol} {p.entry_date}: stop {stop:g} is at or above the "
@@ -652,8 +653,8 @@ def confirm(
             continue
         if (
             demand_stop
-            and _key(p) not in stops_by_key
-            and _key(p) not in declined_set
+            and cohort_key(p) not in stops_by_trade
+            and cohort_key(p) not in declined_set
         ):
             result.unanswered.append(f"{p.book} {p.symbol} {p.entry_date}")
             continue
@@ -678,13 +679,13 @@ def confirm(
     # supplied here derives `recorded` — no Exit can precede a Trade's own commit
     # (ADR 0009's grace window is for the ones answered a day or two later).
     for p in answered:
-        key = _key(p)
+        key = cohort_key(p)
         trade_id = ids.get(key)
         if trade_id is None:
             continue
-        if key in stops_by_key:
+        if key in stops_by_trade:
             stops.set_stop(
-                conn, trade_id, stops_by_key[key], as_of=stop_set_at.get(key)
+                conn, trade_id, stops_by_trade[key], as_of=stop_set_at.get(key)
             )
         elif key in declined_set:
             # Only an explicit decline marks the flag. Absence of a stop is not
@@ -727,7 +728,7 @@ def confirm(
     return result
 
 
-def _key(p: Proposal) -> CohortKey:
+def cohort_key(p: Proposal) -> CohortKey:
     return (p.book, p.symbol, p.entry_date)
 
 
