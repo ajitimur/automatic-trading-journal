@@ -49,8 +49,12 @@ _Avoid_: Timeout, expiry, TTL, freshness
 ### Trade properties
 
 **Stop**:
-The price at which the trader was working to abandon the Trade. Entered by hand — it is not derivable from bars — and immutable once set. Entered while the Trade is live or not at all: a level read off the chart after the fact is a different thing wearing the same name, and the journal would rather carry a hole than a denominator it invented. A Trade that freezes without one has no Risk Percentage and no Realized R, ever.
+The price at which the trader was working to abandon the Trade — the stop-loss actually placed at the broker, even where it departs from what the strategy's rule would have set. Entered by hand — it is not derivable from bars — and immutable once set. Entered while the Trade is live or not at all: a level read off the chart after the fact is a different thing wearing the same name, and the journal would rather carry a hole than a denominator it invented. A Trade that freezes without one has no Risk Percentage and no Realized R, ever.
 _Avoid_: Initial stop, stop loss, trailing stop (the journal does not track stop adjustments)
+
+**Stop Declaration**:
+A Stop stated for a symbol on a Book on a date, before the journal has seen the Fills it belongs to — the stop-loss the trader actually placed, said at the moment it was placed, wherever the trader was. It waits until a Trade with the same book, symbol and entry date appears, and binds to it; that binding is how the Trade gets its Stop. One that finds no Trade within a few trading days lapses, and never carries over to a later entry in the same symbol. Once one has bound, the Stop is set and any later declaration for that Trade is refused rather than applied. It may carry the Setup too. Dated by when it was said, not when the journal read it.
+_Avoid_: Stop note, pending stop, pre-stop, stop intent
 
 **Setup**:
 The chart pattern a Trade was taken on: base breakout, high tight flag, or other. The only judgement the trader records that no data source can supply.
