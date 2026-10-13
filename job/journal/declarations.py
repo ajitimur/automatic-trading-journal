@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class DeclarationEvent:
+class StopDeclarationEvent:
     relay_id: str
     book: str
     symbol: str
@@ -37,11 +37,11 @@ class DeclarationEvent:
 _COLUMNS = "relay_id, book, symbol, entry_date, stop, telegram_at, recorded_at, raw_ref"
 
 
-class DeclarationStore:
+class StopDeclarationStore:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
-    def record(self, event: DeclarationEvent) -> bool:
+    def record(self, event: StopDeclarationEvent) -> bool:
         """Record ``event`` unless its relay id is already on record.
 
         Returns whether a row was added. Does not commit: the caller commits
@@ -63,7 +63,7 @@ class DeclarationStore:
         )
         return cur.rowcount == 1
 
-    def for_key(self, book: str, symbol: str, entry_date: str) -> list[DeclarationEvent]:
+    def for_key(self, book: str, symbol: str, entry_date: str) -> list[StopDeclarationEvent]:
         """Every declaration for one (book, symbol, entry date), oldest said first."""
         rows = self._conn.execute(
             f"SELECT {_COLUMNS} FROM stop_declaration_event "
@@ -73,15 +73,15 @@ class DeclarationStore:
         ).fetchall()
         return [_event(r) for r in rows]
 
-    def all(self) -> list[DeclarationEvent]:
+    def all(self) -> list[StopDeclarationEvent]:
         rows = self._conn.execute(
             f"SELECT {_COLUMNS} FROM stop_declaration_event ORDER BY id"
         ).fetchall()
         return [_event(r) for r in rows]
 
 
-def _event(row: sqlite3.Row) -> DeclarationEvent:
-    return DeclarationEvent(
+def _event(row: sqlite3.Row) -> StopDeclarationEvent:
+    return StopDeclarationEvent(
         relay_id=row["relay_id"],
         book=row["book"],
         symbol=row["symbol"],

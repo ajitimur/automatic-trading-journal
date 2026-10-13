@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 from journal import books, db
-from journal.declarations import DeclarationStore
+from journal.declarations import StopDeclarationStore
 from journal.run import execute_run
 
 FIXTURE = os.path.join(
@@ -52,7 +52,7 @@ class FakeRelay:
         if self.fail_ack is not None:
             raise self.fail_ack
         self.acked.append(list(ids))
-        self.items = [i for i in self.items if i["id"] not in set(ids)]
+        self.items = [i for i in self.items if i.get("id") not in set(ids)]
 
 
 class RelayIntakeTest(unittest.TestCase):
@@ -81,7 +81,7 @@ class RelayIntakeTest(unittest.TestCase):
     def test_the_fixture_declarations_are_recorded_as_events(self):
         execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
 
-        events = DeclarationStore(self.conn).all()
+        events = StopDeclarationStore(self.conn).all()
         self.assertEqual(
             [(e.relay_id, e.book, e.symbol, e.entry_date, e.stop, e.telegram_at) for e in events],
             [
@@ -93,7 +93,7 @@ class RelayIntakeTest(unittest.TestCase):
     def test_events_are_keyed_by_book_symbol_and_entry_date(self):
         execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
 
-        store = DeclarationStore(self.conn)
+        store = StopDeclarationStore(self.conn)
         [bbri] = store.for_key("IDX", "BBRI", "2026-10-13")
         self.assertEqual(bbri.stop, 4120)
         self.assertEqual(store.for_key("US", "BBRI", "2026-10-13"), [])
@@ -120,7 +120,7 @@ class RelayIntakeTest(unittest.TestCase):
     def test_each_event_points_at_its_archived_item(self):
         execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
 
-        for event in DeclarationStore(self.conn).all():
+        for event in StopDeclarationStore(self.conn).all():
             content = self.conn.execute(
                 "SELECT content FROM raw_document WHERE id = ?", (event.raw_ref,)
             ).fetchone()["content"]
@@ -161,7 +161,7 @@ class RelayIntakeTest(unittest.TestCase):
         second = execute_run(self.conn, as_of="2026-10-15", relay=relay)
 
         self.assertEqual(self._relay_pass(second).status, "ran")
-        self.assertEqual(len(DeclarationStore(self.conn).all()), 2)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 2)
         raw = self.conn.execute(
             "SELECT COUNT(*) c FROM raw_document WHERE kind = 'relay-item'"
         ).fetchone()["c"]
@@ -196,7 +196,7 @@ class RelayIntakeTest(unittest.TestCase):
         others = [p for p in result.passes if p.name != "relay"]
         self.assertEqual(len(others), len(books.BOOKS) * 5)
         self.assertTrue(all(p.status != "error" for p in others))
-        self.assertEqual(DeclarationStore(self.conn).all(), [])
+        self.assertEqual(StopDeclarationStore(self.conn).all(), [])
         self.assertEqual(relay.acked, [])
 
     def test_with_no_relay_configured_the_pass_says_it_was_skipped(self):
@@ -219,7 +219,7 @@ class RelayIntakeTest(unittest.TestCase):
         relay = FakeRelay([*_fixture_items(), other])
         result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
 
-        self.assertEqual(len(DeclarationStore(self.conn).all()), 2)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 2)
         self.assertEqual(relay.acked, [["583201001", "583201002", "583201003"]])
         detail = self._relay_row(result.run_id)["detail"]
         self.assertIn("3 item(s) pulled", detail)
@@ -245,7 +245,20 @@ class RelayIntakeTest(unittest.TestCase):
         self.assertIn("3 archived", row["detail"])
         self.assertEqual(relay.acked, [["583201001", "583201002"]])
         self.assertEqual([i["id"] for i in relay.items], ["583201004"])
-        self.assertEqual(len(DeclarationStore(self.conn).all()), 2)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 2)
+
+    def test_an_item_with_no_id_does_not_hold_back_the_others(self):
+        # It can never be acknowledged, so it is reported; the good items still
+        # land and are still acknowledged.
+        anonymous = {"telegram_at": "2026-10-13T05:00:00Z", "text": "BBCA 9000", "parse": {}}
+        relay = FakeRelay([anonymous, *_fixture_items()])
+        result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        row = self._relay_row(result.run_id)
+        self.assertEqual(row["status"], "error")
+        self.assertIn("1 item(s) without an id", row["detail"])
+        self.assertEqual(relay.acked, [["583201001", "583201002"]])
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 2)
 
 
 if __name__ == "__main__":

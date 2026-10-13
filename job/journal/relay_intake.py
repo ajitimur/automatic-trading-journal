@@ -6,7 +6,7 @@ takes everything it holds and, in this order:
 1. files every item verbatim in the keep-forever raw tier, both halves (the
    filesystem archive and ``raw_document``), because a declaration is a source
    document like a Flex statement or a TC (SPEC §13.5);
-2. records each declaration as a :class:`~journal.declarations.DeclarationEvent`;
+2. records each declaration as a :class:`~journal.declarations.StopDeclarationEvent`;
 3. commits;
 4. and only then acknowledges, which is what lets the relay delete the items.
 
@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 from . import backup, db
-from .declarations import DeclarationEvent, DeclarationStore
+from .declarations import StopDeclarationEvent, StopDeclarationStore
 
 # The raw-tier kind every relay item is filed under.
 RELAY_ITEM_KIND = "relay-item"
@@ -82,15 +82,19 @@ def take_in(
     :class:`RelayIntakeError` when something fails after items were archived.
     """
     items = relay.pull()
-    store = DeclarationStore(conn)
+    store = StopDeclarationStore(conn)
     to_ack: list[str] = []
     malformed: list[str] = []
-    archived = recorded = 0
+    archived = recorded = anonymous = 0
 
     for item in items:
-        relay_id = str(item["id"])
         raw_ref = _archive(conn, item, archive_dir=archive_dir, now=now)
         archived += 1
+        if not item.get("id"):
+            # Nothing to acknowledge it by; archived, reported, never blocking.
+            anonymous += 1
+            continue
+        relay_id = str(item["id"])
         parse = item.get("parse") or {}
         if parse.get("kind") != "declaration":
             to_ack.append(relay_id)
@@ -115,11 +119,16 @@ def take_in(
                 f"{counts.summary()}; acknowledge failed, the relay still holds "
                 f"them: {exc}"
             ) from exc
+    problems = []
     if malformed:
-        raise RelayIntakeError(
-            f"{counts.summary()}; {len(malformed)} declaration(s) malformed, "
-            f"archived and left at the relay: {', '.join(malformed)}"
+        problems.append(
+            f"{len(malformed)} declaration(s) malformed, archived and left at "
+            f"the relay: {', '.join(malformed)}"
         )
+    if anonymous:
+        problems.append(f"{anonymous} item(s) without an id, archived only")
+    if problems:
+        raise RelayIntakeError(f"{counts.summary()}; {'; '.join(problems)}")
     return counts.summary()
 
 
@@ -138,11 +147,11 @@ def _archive(conn: sqlite3.Connection, item: dict, *, archive_dir: str, now: str
     )
 
 
-def _declaration(item: dict, parse: dict, *, raw_ref: int, now: str) -> DeclarationEvent:
+def _declaration(item: dict, parse: dict, *, raw_ref: int, now: str) -> StopDeclarationEvent:
     stop = parse["stop"]
     if isinstance(stop, bool) or not isinstance(stop, (int, float)):
         raise TypeError(f"stop {stop!r} is not a number")
-    return DeclarationEvent(
+    return StopDeclarationEvent(
         relay_id=str(item["id"]),
         book=_text(parse, "book"),
         symbol=_text(parse, "symbol"),
