@@ -30,7 +30,7 @@ Two derived rules ride along:
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, Tuple
 
 # The fixed setup vocabulary (SPEC §3.2). Accumulating ``other`` is the signal to
@@ -164,9 +164,14 @@ def set_stop(
 
     Editable until freeze (SPEC §3.5), so a busy-day Trade can be filled in or
     adjusted later. The provenance is re-derived on every set, so it always
-    describes the stop currently stored. ``as_of`` is the date the stop is being
-    set, defaulting to today — it is a parameter so the grace window is testable
-    and so a backfilled run reproduces.
+    describes the stop currently stored. ``as_of`` is when the stop was set,
+    defaulting to today — it is a parameter so the grace window is testable, so
+    a backfilled run reproduces, and so a declared stop dates from when it was
+    said rather than when a run applied it (ADR 0012).
+
+    ``as_of`` is an ISO date or timestamp. A timestamp counts on the date its
+    own offset gives — the exchange's date, which is how a Stop Declaration is
+    dated — never converted to UTC first.
     """
     _require_unfrozen(conn, trade_id, "stop")
     entry = conn.execute(
@@ -179,7 +184,10 @@ def set_stop(
             f"stop {stop:g} is at or above the entry price {entry:g} — "
             "on a long that inverts every R the Trade produces"
         )
-    as_of = as_of or date.today().isoformat()
+    as_of = (
+        datetime.fromisoformat(as_of).date().isoformat()
+        if as_of else date.today().isoformat()
+    )
     provenance = _derive_provenance(conn, trade_id, as_of)
     # A stop arriving clears the decline: the trader changed their mind, and a
     # Trade that has a stop is not one that went without (ADR 0010). Declining is

@@ -118,6 +118,28 @@ class StopsTest(unittest.TestCase):
             stops.RECONSTRUCTED,
         )
 
+    # ── A declared stop dates from when it was said, not when it was applied (ADR 0012) ──
+    def test_a_set_at_timestamp_governs_provenance(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"])
+        # Applied long past the window, but declared on the entry day itself.
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-03T10:15:00-04:00"),
+            stops.RECORDED,
+        )
+
+    def test_a_set_at_timestamp_is_dated_in_its_own_offset(self):
+        trade_id = self._open_trade()
+        self._close_trade(trade_id)
+        self._bars(["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"])
+        # 23:30 New York on the 6th is already the 7th in UTC; the exchange's own
+        # date is the one the window counts, so this is day three, not four.
+        self.assertEqual(
+            stops.set_stop(self.conn, trade_id, 9.0, as_of="2026-08-06T23:30:00-04:00"),
+            stops.RECORDED,
+        )
+
     # ── The window counts trading days, so a suspension stretches it ──
     def test_grace_window_counts_trading_days_not_calendar_days(self):
         trade_id = self._open_trade()
@@ -258,7 +280,10 @@ class StopAboveEntryTest(unittest.TestCase):
         with self.assertRaises(stops.StopAboveEntry):
             trades.confirm(
                 self.conn,
-                stops_by_symbol={"AAA": 90.0, "BBB": 900.0},  # BBB is the bad one
+                stops_by_trade={
+                    ("US", "AAA", "2026-08-19"): 90.0,
+                    ("US", "BBB", "2026-08-19"): 900.0,  # BBB is the bad one
+                },
                 demand_stop=True,
             )
         # AAA's stop was fine, but nothing lands while the batch contains a bad one.

@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 from datetime import datetime, timezone
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from . import backup, books, counterfactual, db, doh, equity, export, fills, flex, flex_client, flex_transport, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
@@ -227,6 +227,20 @@ def _parse_stop_args(pairs: Optional[Sequence[str]]) -> dict:
     return out
 
 
+def _by_trade(proposals: Sequence[trades.Proposal], symbols) -> List[trades.CohortKey]:
+    """The new-trade cohorts a symbol argument names — every one sharing it.
+
+    ``--stop``/``--no-stop`` speak in symbols; the primitive answers per Trade
+    (#47). A symbol shared by two pending Trades answers both, as it always has.
+    """
+    wanted = set(symbols)
+    return [
+        (p.book, p.symbol, p.entry_date)
+        for p in proposals
+        if p.kind == "new-trade" and p.symbol in wanted
+    ]
+
+
 def cmd_confirm(args: argparse.Namespace) -> int:
     db_path = args.db or db.default_db_path()
     conn = db.connect(db_path)
@@ -249,8 +263,11 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         try:
             result = trades.confirm(
                 conn,
-                stops_by_symbol=stops_by_symbol,
-                declined=args.no_stop,
+                stops_by_trade={
+                    key: stops_by_symbol[key[1]]
+                    for key in _by_trade(proposals, stops_by_symbol)
+                },
+                declined=_by_trade(proposals, args.no_stop),
                 demand_stop=True,
             )
         except stops.StopAboveEntry as exc:

@@ -39,7 +39,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Collection, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import stockbit, stops
 
@@ -561,6 +561,11 @@ class ConfirmResult:
     stops_declined: int = 0
 
 
+# A Trade's identity before it has an id: (book, symbol, entry date) — the
+# entry-day cohort (ADR 0001). Stop answers key on this, never on the symbol
+# alone, because one confirm can carry two Trades in the same symbol (#47).
+CohortKey = Tuple[str, str, str]
+
 # An override maps a sell's source_ref to the (entry_date, quantity) slices the
 # trader wants instead of FIFO. Bounded by what each Trade holds open (SPEC §3.4).
 Override = Mapping[str, Sequence[Tuple[str, float]]]
@@ -577,9 +582,10 @@ def confirm(
     conn: sqlite3.Connection,
     overrides: Optional[Override] = None,
     reasons: Optional[Reasons] = None,
-    stops_by_symbol: Optional[Mapping[str, float]] = None,
-    declined: Optional[Sequence[str]] = None,
+    stops_by_trade: Optional[Mapping[CohortKey, float]] = None,
+    declined: Optional[Collection[CohortKey]] = None,
     demand_stop: bool = False,
+    stop_set_at: Optional[Mapping[CohortKey, str]] = None,
 ) -> ConfirmResult:
     """Commit the proposals: land new Trades, apply add-fills/restatements, allocate exits.
 
@@ -592,10 +598,10 @@ def confirm(
 
     **Under ``demand_stop`` the stop is demanded, and answerable two ways**
     (ADR 0010, reversing SPEC §5.5's chaseable path). A new Trade lands only once
-    its symbol appears in ``stops_by_symbol`` or in ``declined``. What is refused
-    is not a missing stop — it is committing *without answering*: the chaseable
-    path returned zero stops over 207 Trades because "later" was always available
-    and never chosen. Declining is one flag and is recorded, so the hole is a
+    its cohort key appears in ``stops_by_trade`` or in ``declined``. What is
+    refused is not a missing stop — it is committing *without answering*: the
+    chaseable path returned zero stops over 207 Trades because "later" was
+    always available and never chosen. Declining is one flag and is recorded, so the hole is a
     decision on the record rather than an omission nobody sees until freeze.
 
     An unanswered Trade is **held, not lost**: its Fills are untouched, it
@@ -606,14 +612,21 @@ def confirm(
     the commit: ``journal confirm`` turns it on, and that is the only way a Trade
     reaches this function from a human. Leaving the primitive ungated keeps the
     mechanical concerns — cohorts, FIFO, restatement — testable without every
-    case having to answer a workflow question it is not about. ``stops_by_symbol``
-    is still honoured when the demand is off, so a caller may supply a stop
-    without being forced to.
+    case having to answer a workflow question it is not about.
+    ``stops_by_trade`` is still honoured when the demand is off, so a caller may
+    supply a stop without being forced to.
+
+    **Answers key on the Trade, not the symbol** (#47): a Stop Declaration names
+    its Trade by (book, symbol, entry date), and two Trades in one confirm can
+    share a symbol. ``stop_set_at`` optionally gives, per cohort, when the stop
+    was set; Stop Provenance derives from it instead of from this run's date
+    (ADR 0009, ADR 0012). A cohort it omits keeps today's date as before.
     """
     overrides = overrides or {}
     reasons = reasons or {}
-    stops_by_symbol = stops_by_symbol or {}
+    stops_by_key = stops_by_trade or {}
     declined_set = set(declined or ())
+    stop_set_at = stop_set_at or {}
     result = ConfirmResult()
     proposals = propose(conn)
 
@@ -622,9 +635,9 @@ def confirm(
     # part-way through would leave some Trades committed and others not — and the
     # whole point of the guard is that a bad stop never reaches the store.
     for p in proposals:
-        if p.kind != "new-trade" or p.symbol not in stops_by_symbol:
+        if p.kind != "new-trade" or _key(p) not in stops_by_key:
             continue
-        stop = stops_by_symbol[p.symbol]
+        stop = stops_by_key[_key(p)]
         if p.avg_price and stop >= p.avg_price:
             raise stops.StopAboveEntry(
                 f"{p.symbol} {p.entry_date}: stop {stop:g} is at or above the "
@@ -639,8 +652,8 @@ def confirm(
             continue
         if (
             demand_stop
-            and p.symbol not in stops_by_symbol
-            and p.symbol not in declined_set
+            and _key(p) not in stops_by_key
+            and _key(p) not in declined_set
         ):
             result.unanswered.append(f"{p.book} {p.symbol} {p.entry_date}")
             continue
@@ -665,12 +678,15 @@ def confirm(
     # supplied here derives `recorded` — no Exit can precede a Trade's own commit
     # (ADR 0009's grace window is for the ones answered a day or two later).
     for p in answered:
-        trade_id = ids.get((p.book, p.symbol, p.entry_date))
+        key = _key(p)
+        trade_id = ids.get(key)
         if trade_id is None:
             continue
-        if p.symbol in stops_by_symbol:
-            stops.set_stop(conn, trade_id, stops_by_symbol[p.symbol])
-        elif p.symbol in declined_set:
+        if key in stops_by_key:
+            stops.set_stop(
+                conn, trade_id, stops_by_key[key], as_of=stop_set_at.get(key)
+            )
+        elif key in declined_set:
             # Only an explicit decline marks the flag. Absence of a stop is not
             # a decline — without the demand on, "no stop supplied" is simply a
             # Trade nobody was asked about, and flagging it would silence the
@@ -711,7 +727,11 @@ def confirm(
     return result
 
 
-def _trade_ids(conn: sqlite3.Connection) -> Dict[Tuple[str, str, str], int]:
+def _key(p: Proposal) -> CohortKey:
+    return (p.book, p.symbol, p.entry_date)
+
+
+def _trade_ids(conn: sqlite3.Connection) -> Dict[CohortKey, int]:
     """Cohort key → committed trade id, for resolving an allocation to its target."""
     return {
         (r["book"], r["symbol"], r["entry_date"]): r["id"]
