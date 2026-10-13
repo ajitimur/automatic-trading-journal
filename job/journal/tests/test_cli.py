@@ -11,7 +11,7 @@ import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 
-from journal import cli, db, equity, fills, flex, flex_client, stops
+from journal import cli, db, equity, fills, flex, flex_client, relay_client, stops
 from journal.cli import main
 
 SAMPLES = os.path.join(
@@ -32,12 +32,16 @@ class CliTest(unittest.TestCase):
         # fetch off so the whole command still runs, without a socket.
         self._bars_before = os.environ.get(cli.ENV_BARS)
         os.environ[cli.ENV_BARS] = "off"
+        # Likewise the relay: an operator's shell may name a real one.
+        self._relay_before = os.environ.pop(relay_client.URL_ENV, None)
 
     def tearDown(self):
         if self._bars_before is None:
             os.environ.pop(cli.ENV_BARS, None)
         else:
             os.environ[cli.ENV_BARS] = self._bars_before
+        if self._relay_before is not None:
+            os.environ[relay_client.URL_ENV] = self._relay_before
         self.tmp.cleanup()
 
     def _run(self):
@@ -94,6 +98,10 @@ class CliTest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.db_path))
         self.assertIn("status: ok", out)
         self.assertIn("advanced", out)
+
+    def test_run_states_the_relay_pass_on_its_own_line(self):
+        _code, out = self._run()
+        self.assertIn("  relay: skipped — no relay configured", out)
 
     def test_second_run_is_visibly_a_noop(self):
         self._run()

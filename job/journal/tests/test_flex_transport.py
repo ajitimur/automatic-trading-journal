@@ -39,15 +39,17 @@ class _FakeConnection:
         self.kwargs = kwargs
         self.peer_address = address
         self.requests = []
+        self.bodies = []
         self.closed = False
         self.response = _FakeResponse(b"<xml/>")
         self.error = None
         _FakeConnection.made.append(self)
 
-    def request(self, method, target, headers=None):
+    def request(self, method, target, body=None, headers=None):
         if self.error is not None:
             raise self.error
         self.requests.append((method, target, headers))
+        self.bodies.append(body)
 
     def getresponse(self):
         return self.response
@@ -172,6 +174,50 @@ class PinnedTransportTest(unittest.TestCase):
 
         self.assertIn("403", str(caught.exception))
         self.assertIn("blocked by your provider", str(caught.exception))
+
+
+class PinnedRequestTest(unittest.TestCase):
+    """The general request the relay client uses: any method, headers, a body (#49)."""
+
+    RELAY = "https://relay.example.workers.dev/ack"
+
+    def test_a_post_carries_its_headers_and_body_beside_host_and_user_agent(self):
+        with _patch_connection():
+            flex_transport.PinnedTransport().request(
+                "POST", self.RELAY, ["203.0.113.7"],
+                headers={"Authorization": "Bearer s", "Content-Type": "application/json"},
+                body=b'{"ids": ["1"]}',
+            )
+
+        conn = _FakeConnection.made[0]
+        method, target, headers = conn.requests[0]
+        self.assertEqual((method, target), ("POST", "/ack"))
+        self.assertEqual(headers, {
+            "Host": "relay.example.workers.dev",
+            "User-Agent": flex_transport.USER_AGENT,
+            "Authorization": "Bearer s",
+            "Content-Type": "application/json",
+        })
+        self.assertEqual(conn.bodies, [b'{"ids": ["1"]}'])
+
+    def test_a_204_is_success_with_an_empty_body(self):
+        def no_content(conn):
+            conn.response = _FakeResponse(b"", status=204, reason="No Content")
+
+        with _patch_connection(no_content):
+            response = flex_transport.PinnedTransport().request(
+                "POST", self.RELAY, ["203.0.113.7"], body=b"{}"
+            )
+        self.assertEqual(response.text, "")
+        self.assertEqual(response.connected_ip, "203.0.113.7")
+
+    def test_a_redirect_is_not_success(self):
+        def moved(conn):
+            conn.response = _FakeResponse(b"", status=302, reason="Found")
+
+        with _patch_connection(moved):
+            with self.assertRaises(flex_transport.TransportError):
+                flex_transport.PinnedTransport().request("GET", self.RELAY, ["203.0.113.7"])
 
 
 if __name__ == "__main__":

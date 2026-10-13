@@ -48,10 +48,10 @@ class GatingTest(unittest.TestCase):
         conn = db.connect(self.db_path)
         result = execute_run(conn, as_of="2026-08-13")
 
-        # Five passes per book: bars and intake ahead of the gate, then the
-        # three enrichment passes it governs. With no bar cache wired the fetch
-        # gates rather than reaching for a socket.
-        self.assertEqual(len(result.passes), len(books.BOOKS) * 5)
+        # The relay pass once, then five passes per book: bars and intake ahead
+        # of the gate, then the three enrichment passes it governs. With no bar
+        # cache wired the fetch gates rather than reaching for a socket.
+        self.assertEqual(len(result.passes), 1 + len(books.BOOKS) * 5)
 
         enriching = [name for name, _ in run_module._PASSES]
         enrichment = [p for p in result.passes if p.name in enriching]

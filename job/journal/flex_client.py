@@ -183,12 +183,7 @@ class FlexClient:
         host = urllib.parse.urlparse(url).hostname or ""
         doh_addresses = list(self._resolver.resolve(host))
         response = self._transport.get(url, doh_addresses)
-        if response.connected_ip not in doh_addresses:
-            raise InterceptionError(
-                f"{host} resolved over DoH to {doh_addresses}, but the "
-                f"connection landed on {response.connected_ip} — the socket "
-                f"reached an address DoH did not name; fix the network"
-            )
+        check_landed(host, doh_addresses, response)
         if not response.text.strip():
             raise EmptyResponseError(
                 f"empty response body from {host} — an empty series is an "
@@ -208,6 +203,20 @@ class FlexClient:
                 f"(in {remaining} day(s)) — rotate it in the portal; "
                 f"regenerating invalidates the current token"
             )
+
+
+def check_landed(host: str, doh_addresses: Sequence[str], response: HttpResponse) -> None:
+    """Raise unless the socket reached one of the addresses DoH named (§13.3).
+
+    The invariant every DoH-pinned client holds on its transport, checked by
+    mismatch and never against a known bad address.
+    """
+    if response.connected_ip not in doh_addresses:
+        raise InterceptionError(
+            f"{host} resolved over DoH to {list(doh_addresses)}, but the "
+            f"connection landed on {response.connected_ip} — the socket "
+            f"reached an address DoH did not name; fix the network"
+        )
 
 
 # The saved Activity Flex Query to fetch unattended (SPEC §4.1). Install-time

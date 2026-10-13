@@ -26,7 +26,7 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- The store location and the one secret both resolve through
+        <!-- The store location and the secrets all resolve through
              indirection (SPEC §13.4, §13.7); nothing is hardcoded in the job. -->
         <key>JOURNAL_DB</key>
         <string>__DATA__/journal.db</string>
@@ -37,6 +37,13 @@
              authorise one. Unset means the intake pass states that it is
              skipped rather than failing. -->
         <key>JOURNAL_IBKR_FLEX_QUERY_ID</key>
+        <string>__SET_AT_INSTALL__</string>
+        <!-- The Telegram relay the run pulls Stop Declarations from (ADR 0011),
+             and the bearer secret it checks (the Worker's MAC_SECRET). Unset
+             URL means the relay pass states that it is skipped. -->
+        <key>JOURNAL_RELAY_URL</key>
+        <string>__SET_AT_INSTALL__</string>
+        <key>JOURNAL_SECRET_RELAY_MAC_SECRET</key>
         <string>__SET_AT_INSTALL__</string>
         <!-- Durability (SPEC §13.5): every successful run leaves a VACUUM INTO
              snapshot beside the DB, and an off-machine copy here. Point this at

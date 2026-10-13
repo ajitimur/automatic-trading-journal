@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional, Sequence
 
-from . import backup, books, counterfactual, db, doh, equity, export, fills, flex, flex_client, flex_transport, review, risk, secrets, stockbit, stops, trades
+from . import backup, books, counterfactual, db, doh, equity, export, fills, flex, flex_client, flex_transport, relay_client, review, risk, secrets, stockbit, stops, trades
 from .run import RunResult, execute_run
 
 
@@ -39,6 +39,13 @@ def _format_summary(result: RunResult, db_path: str) -> str:
         f"run #{result.run_id}  as-of {result.as_of_date}  status: {result.status}",
         f"store: {db_path}",
     ]
+    # Run-wide passes (the relay), which belong to no one book.
+    booked = {b.book for b in result.books}
+    for p in result.passes:
+        if p.book in booked:
+            continue
+        status = f"{p.status} — " if p.status in ("gated", "error") else ""
+        lines.append(f"  {p.name}: {status}{p.detail}")
     for book in result.books:
         if book.status == "advanced":
             detail = f"advanced {book.days_advanced} day(s) ({book.from_date or 'floor'} -> {book.to_date})"
@@ -97,7 +104,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     conn = db.connect(db_path)
     try:
         result = execute_run(
-            conn, as_of=args.as_of, bar_cache=_build_bar_cache(conn)
+            conn,
+            as_of=args.as_of,
+            bar_cache=_build_bar_cache(conn),
+            relay=relay_client.build_default_client(),
         )
     finally:
         conn.close()

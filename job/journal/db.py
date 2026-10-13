@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA = """
 -- Scope Start per book (ADR 0008): the date from which this Book's Trades count.
@@ -384,6 +384,26 @@ CREATE TABLE IF NOT EXISTS raw_document (
     fetched_at TEXT NOT NULL,      -- when it was captured
     content    TEXT NOT NULL       -- the raw document, verbatim
 );
+
+-- Stop Declarations as they arrived from the relay (ADR 0011, #49): one event
+-- per relay item, never updated or deleted, so a replaced or withdrawn
+-- declaration stays on the record. Looked up by (book, symbol, entry_date), the
+-- key it binds to a Trade on; `relay_id` is unique so re-pulling an item the
+-- relay still holds adds nothing. Dated by `telegram_at`, when it was said, not
+-- `recorded_at`, when the journal read it.
+CREATE TABLE IF NOT EXISTS stop_declaration_event (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    relay_id    TEXT NOT NULL UNIQUE,  -- the relay's stable id (Telegram update_id)
+    book        TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    entry_date  TEXT NOT NULL,         -- ISO date in the book's exchange time zone
+    stop        REAL NOT NULL,
+    telegram_at TEXT NOT NULL,         -- UTC ISO, when the trader sent it
+    recorded_at TEXT NOT NULL,         -- when the run recorded it
+    raw_ref     INTEGER NOT NULL REFERENCES raw_document(id)
+);
+CREATE INDEX IF NOT EXISTS stop_declaration_event_key
+    ON stop_declaration_event (book, symbol, entry_date);
 
 -- The risk/exposure denominator, and nothing more (SPEC §9). Mark-to-market
 -- NAV, not deposited capital; one job, not the book's equity curve. Identity is

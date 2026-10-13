@@ -9,7 +9,7 @@ scheduler on any host substitutes without touching the job.
 0. Install the job's Python dependencies (yfinance, the one bar source behind
    the seam — §4.4): `pip install -r job/requirements.txt`.
 
-1. Point the store and the one secret at real locations — both resolve through
+1. Point the store and the secrets at real locations — all resolve through
    indirection, nothing is hardcoded in the job (§13.4, §13.7):
 
    ```sh
@@ -19,6 +19,11 @@ scheduler on any host substitutes without touching the job.
    # Config, not a secret: it names a report, it does not authorise one. Leave it
    # unset and the pass states that it is skipped — it never fails the run.
    export JOURNAL_IBKR_FLEX_QUERY_ID="…"
+   # The Telegram relay the `relay` pass pulls Stop Declarations from (ADR 0011),
+   # and the secret it checks on pull and acknowledge (the Worker's MAC_SECRET).
+   # Leave the URL unset and the pass states that it is skipped.
+   export JOURNAL_RELAY_URL="https://<worker>.workers.dev"
+   export JOURNAL_SECRET_RELAY_MAC_SECRET="…"
    # Durability (SPEC §13.5). Snapshots and the raw archive default beside the
    # DB; point the off-machine copy at a durable, ideally encrypted, volume so
    # at least one DB copy lands off this machine. The archive is PII-bearing —
