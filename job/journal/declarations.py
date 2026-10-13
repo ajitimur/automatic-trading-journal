@@ -80,7 +80,7 @@ class StopDeclarationStore:
         return [_event(r) for r in rows]
 
     def live(
-        self, exclude_relay_ids: "set[str] | None" = None
+        self, exclude_relay_ids: set[str] | None = None
     ) -> dict[tuple[str, str, str], StopDeclarationEvent]:
         """The one live declaration per key, ``(book, symbol, entry_date) -> event``.
 
