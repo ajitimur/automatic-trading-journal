@@ -33,6 +33,22 @@ scheduler on any host substitutes without touching the job.
    # export JOURNAL_ARCHIVE_DIR=…     # default: <db>/../archive
    ```
 
+   The relay half of this — creating the bot, finding your Telegram user id,
+   standing up the Cloudflare Worker and its store, setting the four Worker
+   secrets, registering the webhook, and producing the two relay values above
+   (`JOURNAL_RELAY_URL` and `JOURNAL_SECRET_RELAY_MAC_SECRET`) — is a sequence
+   of steps only a human can do. Don't rediscover them: run the guided wizard
+   (ADR 0011, issue #58), then carry its two saved values into this step:
+
+   ```sh
+   scripts/relay-setup-wizard.sh
+   ```
+
+   It opens each page, captures each value, writes the secrets to the vault
+   without echoing them to the terminal, is safe to re-run (it reuses what it
+   already saved and asks before redoing a done step), and ends with a smoke
+   test that declares `BBRI 4120` and checks it comes back on a pull.
+
 2. Copy the plist template, substituting `__REPO__`, `__DATA__`, the token, the
    query id and the off-site directory. The `logs` directory must exist before
    the agent loads — `launchd` will not create `StandardOutPath` for you:
