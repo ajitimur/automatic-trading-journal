@@ -297,7 +297,7 @@ banner "Telegram relay setup (issue #58)"
 stage "Preflight"
 say "This stands up the Telegram relay (ADR 0011): the one component that runs"
 say "off your Mac. It receives the bot's messages and holds your Stop"
-say "Declarations until the daily run pulls them. Six manual steps, then a"
+say "Declarations until the daily run pulls them. Five manual steps, then a"
 say "smoke test that sends a declaration and checks it comes back on a pull."
 printf '\n'
 missing=0
