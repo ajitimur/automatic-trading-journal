@@ -36,8 +36,8 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 from . import (
-    backup, bar_sync, books, counterfactual, fills, flex_client, nags, post_exit,
-    regime, relay_intake,
+    backup, bar_sync, binding, books, counterfactual, fills, flex_client, nags,
+    post_exit, regime, relay_intake,
 )
 
 
@@ -54,7 +54,7 @@ class BookOutcome:
 @dataclass
 class PassOutcome:
     book: str
-    name: str    # 'relay' | 'bars' | 'intake' | 'regime' | 'counterfactual' | 'freeze'
+    name: str    # 'relay' | 'bars' | 'intake' | 'regime' | 'counterfactual' | 'freeze' | 'bind'
     status: str  # 'ran' | 'gated' | 'error'
     detail: Optional[str] = None
 
@@ -230,6 +230,22 @@ def _pass_relay(conn, relay) -> PassOutcome:
     return PassOutcome(relay_intake.NO_BOOK, "relay", "ran", detail)
 
 
+def _pass_bind(conn) -> PassOutcome:
+    """Bind live Stop Declarations to new Trades and auto-commit them (ADR 0012).
+
+    Runs once per run, *after* the books, because it needs their Fills in the
+    ledger: a declaration binds to the ``new-trade`` the Fills derive. Like the
+    relay pass it spans both books, so it sits under :data:`relay_intake.NO_BOOK`.
+    The row states bound, committed and refused counts; a failure is recorded as
+    data and never sinks the run (§13.6).
+    """
+    try:
+        detail = binding.bind_and_commit(conn, now=_now_iso()).summary()
+    except Exception as exc:  # one pass failing must not sink the run (§13.6)
+        return PassOutcome(relay_intake.NO_BOOK, "bind", "error", str(exc))
+    return PassOutcome(relay_intake.NO_BOOK, "bind", "ran", detail)
+
+
 def _record_passes(conn, run_id: int, passes: list[PassOutcome]) -> None:
     for p in passes:
         conn.execute(
@@ -391,6 +407,13 @@ def execute_run(
         )
         _record_passes(conn, run_id, book_passes)
         passes.extend(book_passes)
+
+    # Binding runs once, after the books, so every Fill intake has landed: a live
+    # declaration whose key matches a clean new-trade commits the Trade without
+    # confirm (ADR 0012, #50).
+    bind_pass = _pass_bind(conn)
+    _record_passes(conn, run_id, [bind_pass])
+    passes.append(bind_pass)
 
     # The nags ride the same run (§11.4): stated facts, recorded then read off the
     # banner on next open. Gathered once over the enriched store, not per book.

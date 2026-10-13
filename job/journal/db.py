@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA = """
 -- Scope Start per book (ADR 0008): the date from which this Book's Trades count.
@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS trade (
     reviewed_at     TEXT,                           -- review-surface stamp (#40), NULL until *Reviewed →*
     note            TEXT,                           -- review-surface free-text note (#40), not freeze-locked
     stop_declined   INTEGER NOT NULL DEFAULT 0,     -- confirm asked for a stop and the trader declined (ADR 0010)
+    auto_committed  INTEGER NOT NULL DEFAULT 0,     -- a bound Stop Declaration committed it without confirm (ADR 0012)
     UNIQUE (book, symbol, entry_date)
 );
 
@@ -405,6 +406,18 @@ CREATE TABLE IF NOT EXISTS stop_declaration_event (
 CREATE INDEX IF NOT EXISTS stop_declaration_event_key
     ON stop_declaration_event (book, symbol, entry_date);
 
+-- A Stop Declaration that bound to a Trade and committed it (ADR 0012, #50).
+-- One row per declaration event that bound — `relay_id` is the live event for
+-- its (book, symbol, entry_date), `trade_id` the Trade it committed. Keyed on
+-- `relay_id` so re-pulling or re-running a declaration binds at most once: the
+-- next run sees it already bound and leaves the committed Trade alone. This is
+-- the record of *which* declaration set *which* Trade's Stop.
+CREATE TABLE IF NOT EXISTS stop_declaration_binding (
+    relay_id TEXT PRIMARY KEY REFERENCES stop_declaration_event(relay_id),
+    trade_id INTEGER NOT NULL REFERENCES trade(id),
+    bound_at TEXT NOT NULL            -- when the run bound it
+);
+
 -- The risk/exposure denominator, and nothing more (SPEC §9). Mark-to-market
 -- NAV, not deposited capital; one job, not the book's equity curve. Identity is
 -- (book, date) on a *calendar* axis (§9.5) — a NAV row exists on days nothing
@@ -599,6 +612,9 @@ _TRADE_COLUMNS = {
     # The stop demanded at confirm, answered either way (ADR 0010). 1 means the
     # trader was asked and chose the permanent hole; the nag then leaves it alone.
     "stop_declined": "INTEGER NOT NULL DEFAULT 0",
+    # A bound Stop Declaration committed this Trade without confirm (ADR 0012,
+    # #50), so the weekly review can show what landed unseen.
+    "auto_committed": "INTEGER NOT NULL DEFAULT 0",
 }
 
 

@@ -50,8 +50,9 @@ class GatingTest(unittest.TestCase):
 
         # The relay pass once, then five passes per book: bars and intake ahead
         # of the gate, then the three enrichment passes it governs. With no bar
-        # cache wired the fetch gates rather than reaching for a socket.
-        self.assertEqual(len(result.passes), 1 + len(books.BOOKS) * 5)
+        # cache wired the fetch gates rather than reaching for a socket. The bind
+        # pass runs once more after the books (ADR 0012).
+        self.assertEqual(len(result.passes), 2 + len(books.BOOKS) * 5)
 
         enriching = [name for name, _ in run_module._PASSES]
         enrichment = [p for p in result.passes if p.name in enriching]

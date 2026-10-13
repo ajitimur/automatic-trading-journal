@@ -194,7 +194,8 @@ class RelayIntakeTest(unittest.TestCase):
         self.assertIn("relay unreachable", row["detail"])
 
         others = [p for p in result.passes if p.name != "relay"]
-        self.assertEqual(len(others), len(books.BOOKS) * 5)
+        # Five passes per book, plus the single bind pass after the books.
+        self.assertEqual(len(others), len(books.BOOKS) * 5 + 1)
         self.assertTrue(all(p.status != "error" for p in others))
         self.assertEqual(StopDeclarationStore(self.conn).all(), [])
         self.assertEqual(relay.acked, [])

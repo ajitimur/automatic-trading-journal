@@ -79,6 +79,55 @@ class StopDeclarationStore:
         ).fetchall()
         return [_event(r) for r in rows]
 
+    def live(
+        self, exclude_relay_ids: "set[str] | None" = None
+    ) -> dict[tuple[str, str, str], StopDeclarationEvent]:
+        """The one live declaration per key, ``(book, symbol, entry_date) -> event``.
+
+        A key can carry several events once a resend replaces an earlier one
+        (#51); the *latest said* — the greatest ``telegram_at`` — is the live one.
+        ``exclude_relay_ids`` drops any already bound to a Trade, so a run that
+        already committed a declaration does not look at it again (the binding is
+        what makes auto-commit idempotent, ADR 0012).
+        """
+        exclude = exclude_relay_ids or set()
+        latest: dict[tuple[str, str, str], StopDeclarationEvent] = {}
+        for e in self.all():  # id-ascending, so ties on telegram_at keep the newer
+            key = (e.book, e.symbol, e.entry_date)
+            current = latest.get(key)
+            if current is None or e.telegram_at >= current.telegram_at:
+                latest[key] = e
+        return {k: e for k, e in latest.items() if e.relay_id not in exclude}
+
+
+class StopDeclarationBindingStore:
+    """Which Stop Declaration bound to which Trade (ADR 0012, #50).
+
+    One row per declaration event that bound and committed a Trade. Recording is
+    idempotent on the relay id: a declaration the relay still holds, or one a
+    re-run re-derives, binds at most once.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def record(self, relay_id: str, trade_id: int, bound_at: str) -> bool:
+        """Record that ``relay_id`` bound ``trade_id``. Does not commit."""
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO stop_declaration_binding "
+            "(relay_id, trade_id, bound_at) VALUES (?, ?, ?)",
+            (relay_id, trade_id, bound_at),
+        )
+        return cur.rowcount == 1
+
+    def bound_relay_ids(self) -> set[str]:
+        return {
+            r["relay_id"]
+            for r in self._conn.execute(
+                "SELECT relay_id FROM stop_declaration_binding"
+            )
+        }
+
 
 def _event(row: sqlite3.Row) -> StopDeclarationEvent:
     return StopDeclarationEvent(
