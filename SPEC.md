@@ -245,6 +245,8 @@ So: you are not re-confirming the same misparse — but only for the class of mi
 > **This bet lost, and the reversal is recorded rather than papered over.** Over 207 Trades the chaseable path produced **zero** stops and froze 116 holes shut — the live risk §11.4 flagged, realized.
 >
 > **Confirm now demands the stop** ([ADR 0010](docs/adr/0010-confirm-demands-the-stop.md)): a new Trade commits only once answered with `--stop SYMBOL=PRICE` or `--no-stop SYMBOL`, the latter recording that the hole was chosen. What is demanded is an *answer*, not a stop — declining stays a keystroke, so §5.5's friction argument is bounded rather than dismissed, and an unanswered Trade is held rather than rejected, leaving §5.7's "the fills are facts" intact. A declined Trade is no longer nagged. [ADR 0009](docs/adr/0009-stops-are-never-backfilled.md) adds the 3-trading-day grace window and rules backfill out entirely.
+>
+> **The stop now arrives before the Trade does** ([ADR 0011](docs/adr/0011-stops-are-declared-at-entry-through-a-telegram-relay.md)): the trader declares it from the phone at entry, through a Telegram bot, and the declaration binds to the Trade when its Fills land. The confirm-time flags remain as the laptop path.
 
 ### 5.6 Where the brokers differ
 
@@ -268,6 +270,8 @@ A week of statements is mostly agreeing with the exit reasons enrichment propose
 **New Trades stay one at a time.** A mis-parsed quantity there poisons everything downstream, and catching it is precisely what confirm exists for.
 
 > **Consequence, and it is a real design constraint:** the exit-reason proposal must be good enough to **accept unread**, because in the weekly rhythm it will be. That accepting-unread guarantees some wrong ones land, which is why the review surface's exit-reason override is structurally required rather than a convenience ([§11.3](#113-scope-and-actions)).
+
+> **Amended:** a new Trade whose Stop Declaration has bound, and which passed every gate, now commits without confirm ([ADR 0012](docs/adr/0012-a-bound-declaration-commits-the-trade.md)). The gates catch what the one-at-a-time look was for; every other proposal kind still waits here.
 
 ### 5.9 What the human sees
 
@@ -922,6 +926,8 @@ So **a missed day is not an error**, and the hosting requirement fell from *must
 That removed cloud's third leg; backfill had already removed its second (always-on). Its first — sidestepping the DNS interception — was left standing alone, which is a narrow reason to rent a box. Meanwhile cloud *acquired* costs from the same answers: with the review surface local-only and the TC hand-dropped, a cloud host would need a **public authenticated surface** for both the workbench and the file drop. **The always-on box ranks last** — it spends hardware money to solve uptime that backfill dissolved, and inherits the DNS dependency anyway.
 
 **The one real cost of the manual drop:** with mail polling, a missed IDX trade was structurally impossible; now a forgotten drop is invisible, because nothing in the system knows the trade happened. Paid for by **a stated fact in the banner, not an alarm** ([§11.4](#114-the-attention-banner)). The monthly SoA serves as a hand-dropped reconciliation pass — lossy for fills, but sufficient to answer *did I miss a day*.
+
+> **Amended by [ADR 0011](docs/adr/0011-stops-are-declared-at-entry-through-a-telegram-relay.md).** The TC is now forwarded to the journal's Telegram bot rather than dropped on the laptop, and a thin relay, the one component off this machine, holds messages until the daily run pulls them. Mailbox access stays refused. A forgotten forward is no longer invisible whenever a Stop Declaration was made that day: the relay reminds the trader at 20:00 WIB.
 
 ### 13.3 Schedule and DNS
 
