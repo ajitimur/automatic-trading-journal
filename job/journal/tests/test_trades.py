@@ -9,7 +9,7 @@ import os
 import tempfile
 import unittest
 
-from journal import db, fills, flex, trades
+from journal import db, fills, flex, stops, trades
 
 
 def _buy(ref, symbol, qty, price, when, revision=1, book="US"):
@@ -257,7 +257,9 @@ class HeldTradeExitTest(unittest.TestCase):
         self._round_trip()
         trades.confirm(self.conn, demand_stop=True)  # held
         result = trades.confirm(
-            self.conn, stops_by_symbol={"FPNI": 440.0}, demand_stop=True
+            self.conn,
+            stops_by_trade={("US", "FPNI", "2026-08-19"): 440.0},
+            demand_stop=True,
         )
         self.assertEqual(result.new_trades, 1)
         self.assertEqual(result.exits_allocated, 1)
@@ -268,3 +270,123 @@ class HeldTradeExitTest(unittest.TestCase):
         self.assertEqual(row["stop"], 440.0)
         # The stop was answered at commit, before any Exit was on record.
         self.assertEqual(row["stop_provenance"], "recorded")
+
+
+class StopAnswersByCohortTest(unittest.TestCase):
+    """Stops and declines key on the Trade, not the symbol (#47, ADR 0012).
+
+    A Stop Declaration names its Trade by (book, symbol, entry date), and one
+    confirm can carry two Trades in the same symbol — one per book, or two entry
+    days. An answer for one must never land on the other.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = db.connect(os.path.join(self.tmp.name, "journal.db"))
+        # Two entry days in one symbol: two Trades (ADR 0001).
+        fills.insert_fills(self.conn, [
+            _buy("b1", "AAA", 100, 100.0, "2026-08-18T09:30:00-04:00"),
+            _buy("b2", "AAA", 100, 80.0, "2026-08-19T09:30:00-04:00"),
+        ])
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _row(self, entry_date):
+        return self.conn.execute(
+            "SELECT stop, stop_declined FROM trade WHERE entry_date = ?",
+            (entry_date,),
+        ).fetchone()
+
+    def test_each_cohort_takes_only_its_own_stop(self):
+        result = trades.confirm(
+            self.conn,
+            stops_by_trade={
+                ("US", "AAA", "2026-08-18"): 95.0,
+                ("US", "AAA", "2026-08-19"): 75.0,
+            },
+            demand_stop=True,
+        )
+        self.assertEqual(result.new_trades, 2)
+        self.assertEqual(self._row("2026-08-18")["stop"], 95.0)
+        self.assertEqual(self._row("2026-08-19")["stop"], 75.0)
+
+    def test_answering_one_cohort_holds_the_other(self):
+        result = trades.confirm(
+            self.conn,
+            stops_by_trade={("US", "AAA", "2026-08-18"): 95.0},
+            demand_stop=True,
+        )
+        self.assertEqual(result.new_trades, 1)
+        self.assertEqual(result.unanswered, ["US AAA 2026-08-19"])
+        self.assertIsNone(self._row("2026-08-19"))
+
+    def test_a_decline_applies_only_to_its_own_cohort(self):
+        result = trades.confirm(
+            self.conn,
+            stops_by_trade={("US", "AAA", "2026-08-18"): 95.0},
+            declined=[("US", "AAA", "2026-08-19")],
+            demand_stop=True,
+        )
+        self.assertEqual(result.new_trades, 2)
+        self.assertEqual(result.stops_declined, 1)
+        first, second = self._row("2026-08-18"), self._row("2026-08-19")
+        self.assertEqual((first["stop"], first["stop_declined"]), (95.0, 0))
+        self.assertEqual((second["stop"], second["stop_declined"]), (None, 1))
+
+    def test_the_entry_guard_runs_per_cohort(self):
+        # 90 sits below the first cohort's 100 entry but above the second's 80.
+        with self.assertRaises(stops.StopAboveEntry):
+            trades.confirm(
+                self.conn,
+                stops_by_trade={
+                    ("US", "AAA", "2026-08-18"): 90.0,
+                    ("US", "AAA", "2026-08-19"): 90.0,
+                },
+                demand_stop=True,
+            )
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) AS n FROM trade").fetchone()["n"], 0
+        )
+
+    def test_the_same_symbol_on_two_books_stays_apart(self):
+        fills.insert_fills(self.conn, [
+            _buy("b3", "BBB", 100, 500.0, "2026-08-18T09:30:00+07:00", book="IDX"),
+            _buy("b4", "BBB", 100, 50.0, "2026-08-18T09:30:00-04:00"),
+        ])
+        trades.confirm(
+            self.conn,
+            stops_by_trade={("IDX", "BBB", "2026-08-18"): 450.0},
+            declined=[("US", "BBB", "2026-08-18")],
+        )
+        rows = {
+            r["book"]: (r["stop"], r["stop_declined"])
+            for r in self.conn.execute(
+                "SELECT book, stop, stop_declined FROM trade WHERE symbol = 'BBB'"
+            )
+        }
+        self.assertEqual(rows, {"IDX": (450.0, 0), "US": (None, 1)})
+
+    def test_a_set_at_time_reaches_the_stop_path(self):
+        seen = []
+        real = stops.set_stop
+
+        def spy(conn, trade_id, stop, as_of=None):
+            seen.append(as_of)
+            return real(conn, trade_id, stop, as_of=as_of)
+
+        stops.set_stop = spy
+        try:
+            trades.confirm(
+                self.conn,
+                stops_by_trade={
+                    ("US", "AAA", "2026-08-18"): 95.0,
+                    ("US", "AAA", "2026-08-19"): 75.0,
+                },
+                stop_set_at={("US", "AAA", "2026-08-18"): "2026-08-18T10:02:00-04:00"},
+            )
+        finally:
+            stops.set_stop = real
+        # Given, it is passed through; absent, the stop path picks today as before.
+        self.assertEqual(sorted(seen, key=str), ["2026-08-18T10:02:00-04:00", None])
