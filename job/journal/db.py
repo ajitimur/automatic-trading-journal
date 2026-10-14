@@ -703,6 +703,14 @@ def _migrate_stop_declaration_event(conn: sqlite3.Connection) -> None:
             "ON stop_declaration_event (book, symbol, entry_date);\n"
             "COMMIT;"
         )
+    except sqlite3.Error:
+        # executescript leaves a failed script's transaction open; undo it so
+        # the old table stands and the file opens as it was.
+        if conn.in_transaction:
+            conn.rollback()
+        conn.execute("PRAGMA foreign_keys = ON")
+        raise
+    try:
         broken = conn.execute("PRAGMA foreign_key_check").fetchall()
         if broken:
             raise sqlite3.IntegrityError(f"foreign keys broken by the v13 migration: {broken}")

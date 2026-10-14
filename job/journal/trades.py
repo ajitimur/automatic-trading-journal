@@ -725,7 +725,12 @@ def confirm(
             )
             result.stops_declined += 1
         if key in setups_by_trade:
-            stops.set_setup(conn, trade_id, setups_by_trade[key])
+            # A plain UPDATE inside confirm's transaction, not `stops.set_setup`,
+            # which commits on its own; the Trade landed just now, so it is
+            # unfrozen, and intake has already held the setup to the vocabulary.
+            conn.execute(
+                "UPDATE trade SET setup = ? WHERE id = ?", (setups_by_trade[key], trade_id)
+            )
 
     # Exits — skipped entirely when auto-committing, so a same-day round trip's
     # sell stays in the queue for the weekly bulk exit-reason confirm (ADR 0012).

@@ -202,6 +202,9 @@ export function createRelay(deps: RelayDeps): Relay {
   async function remember(declared: RecentDeclaration): Promise<Declared | undefined> {
     const previous = (await recent()).find((r) => keyOf(r.parse) === keyOf(declared.parse));
     if (previous?.id === declared.id) return previous.replaced;
+    // An older message arriving late (a retry after a newer one landed) never
+    // displaces the newer; the Mac orders by when each was said, too.
+    if (previous && bySaid(previous, declared) > 0) return undefined;
     const replaced = previous && !previous.withdrawn_by ? previous.parse : undefined;
     await store.putRecent(replaced ? { ...declared, replaced } : declared);
     return replaced;

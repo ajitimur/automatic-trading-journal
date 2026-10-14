@@ -145,6 +145,14 @@ test('a retried replace replies the same and never reads as replacing itself', a
   assert.deepEqual((await pull(h)).items.map((i) => i.id), ['6101', '6102']);
 });
 
+test('an older message arriving after a newer one for the same key does not displace it', async () => {
+  const h = harness();
+  await say(h, 'BBRI 4120', '2026-10-13T02:16:00Z', 6152);
+  assert.equal(await say(h, 'BBRI 412', '2026-10-13T02:15:00Z', 6151), '✓ IDX BBRI SL 412, entry 13 Oct');
+  // The newer one is still what a resend replaces.
+  assert.match((await say(h, 'BBRI 4100', '2026-10-13T02:17:00Z')) ?? '', /\(replaced 4,120 → 4,100\)$/);
+});
+
 test('/undo withdraws the last declaration and names it', async () => {
   const h = harness();
   await say(h, 'BBRI 4120', MORNING, 6201);

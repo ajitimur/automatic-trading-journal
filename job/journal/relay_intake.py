@@ -136,7 +136,7 @@ def take_in(
         problems.append(f"known-US push failed: {exc}")
     if malformed:
         problems.append(
-            f"{len(malformed)} declaration(s) malformed, archived and left at "
+            f"{len(malformed)} item(s) malformed, archived and left at "
             f"the relay: {', '.join(malformed)}"
         )
     if anonymous:

@@ -307,7 +307,7 @@ class RelayIntakeTest(unittest.TestCase):
 
         row = self._relay_row(result.run_id)
         self.assertEqual(row["status"], "error")
-        self.assertIn("4 declaration(s) malformed", row["detail"])
+        self.assertIn("4 item(s) malformed", row["detail"])
         for relay_id in ("b1", "b2", "b3", "b4"):
             self.assertIn(relay_id, row["detail"])
         self.assertIn("11 archived", row["detail"])
