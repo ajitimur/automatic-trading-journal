@@ -80,15 +80,9 @@ class RelayClient:
         ``{"items": []}``.
         """
         response = self._send("GET", "/pull")
-        if not response.text.strip():
-            raise EmptyResponseError(
-                f"empty response body from {self._host()} — an empty relay "
-                f"answers with no items, not with nothing (fix the network)"
-            )
-        try:
-            payload = json.loads(response.text)
-        except ValueError as exc:
-            raise RelayError(f"relay pull is not JSON: {response.text[:200]!r}") from exc
+        payload = self._json(
+            response, "pull", "an empty relay answers with no items, not with nothing"
+        )
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             raise RelayError(f"relay pull has no items list: {response.text[:200]!r}")
@@ -124,19 +118,25 @@ class RelayClient:
             body=json.dumps({"text": text}).encode("utf-8"),
             content_type="application/json",
         )
-        if not response.text.strip():
-            raise EmptyResponseError(
-                f"empty response body from {self._host()} — a sent message "
-                f"answers with its id, not with nothing (fix the network)"
-            )
-        try:
-            payload = json.loads(response.text)
-        except ValueError as exc:
-            raise RelayError(f"relay send is not JSON: {response.text[:200]!r}") from exc
+        payload = self._json(
+            response, "send", "a sent message answers with its id, not with nothing"
+        )
         message_id = payload.get("message_id") if isinstance(payload, dict) else None
         if isinstance(message_id, bool) or not isinstance(message_id, int):
             raise RelayError(f"relay send has no message id: {response.text[:200]!r}")
         return message_id
+
+    def _json(self, response: HttpResponse, call: str, empty_means: str) -> object:
+        """The parsed body. An empty one is the ISP's interception, never an answer."""
+        if not response.text.strip():
+            raise EmptyResponseError(
+                f"empty response body from {self._host()} — {empty_means} "
+                f"(fix the network)"
+            )
+        try:
+            return json.loads(response.text)
+        except ValueError as exc:
+            raise RelayError(f"relay {call} is not JSON: {response.text[:200]!r}") from exc
 
     def _send(
         self,

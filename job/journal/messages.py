@@ -35,6 +35,10 @@ from . import stops, trades
 from .binding import Refusal
 
 
+UNDECLARED = "undeclared"
+REFUSAL = "refusal"
+
+
 class Sender(Protocol):
     """The outbound half of the relay seam: returns the Telegram message id."""
 
@@ -44,12 +48,16 @@ class Sender(Protocol):
 
 @dataclass(frozen=True)
 class Message:
-    kind: str  # 'undeclared' | 'refusal'
+    kind: str  # UNDECLARED | REFUSAL
     book: str
     symbol: str
     entry_date: str
     text: str
     relay_id: Optional[str] = None
+
+    @property
+    def key(self) -> trades.CohortKey:
+        return (self.book, self.symbol, self.entry_date)
 
 
 @dataclass(frozen=True)
@@ -98,7 +106,7 @@ def due_messages(
 ) -> list[Message]:
     """Refusals not yet sent, then nags for new Trades not yet nagged ``as_of``."""
     out = [_refusal(r) for r in refusals if not _refusal_sent(conn, r.relay_id)]
-    refused_now = {(m.book, m.symbol, m.entry_date) for m in out}
+    refused_now = {m.key for m in out}
     for p in trades.propose(conn):
         if p.kind != "new-trade":
             continue
@@ -115,7 +123,7 @@ def _refusal(r: Refusal) -> Message:
         f"average {_number(r.entry_avg)}, entry {r.entry_date}, so it was not "
         f"bound. Resend a stop below {_number(r.entry_avg)}."
     )
-    return Message("refusal", r.book, r.symbol, r.entry_date, text, relay_id=r.relay_id)
+    return Message(REFUSAL, r.book, r.symbol, r.entry_date, text, relay_id=r.relay_id)
 
 
 def _nag(conn: sqlite3.Connection, p: trades.Proposal, as_of: str) -> Message:
@@ -127,7 +135,7 @@ def _nag(conn: sqlite3.Connection, p: trades.Proposal, as_of: str) -> Message:
         f"{_number(p.quantity)} shares{price}, entry {entry_date}\n"
         f"{_grace(left)}"
     )
-    return Message("undeclared", p.book, p.symbol, entry_date, text)
+    return Message(UNDECLARED, p.book, p.symbol, entry_date, text)
 
 
 def _grace(left: Optional[int]) -> str:
@@ -145,17 +153,17 @@ def _number(x: float) -> str:
 
 def _refusal_sent(conn: sqlite3.Connection, relay_id: str) -> bool:
     return conn.execute(
-        "SELECT 1 FROM outbound_message WHERE kind = 'refusal' AND relay_id = ?",
-        (relay_id,),
+        "SELECT 1 FROM outbound_message WHERE kind = ? AND relay_id = ?",
+        (REFUSAL, relay_id),
     ).fetchone() is not None
 
 
 def _nagged_on(conn: sqlite3.Connection, key: trades.CohortKey, as_of: str) -> bool:
     book, symbol, entry_date = key
     return conn.execute(
-        "SELECT 1 FROM outbound_message WHERE kind = 'undeclared' "
+        "SELECT 1 FROM outbound_message WHERE kind = ? "
         "AND book = ? AND symbol = ? AND entry_date = ? AND sent_on = ?",
-        (book, symbol, entry_date, as_of),
+        (UNDECLARED, book, symbol, entry_date, as_of),
     ).fetchone() is not None
 
 
