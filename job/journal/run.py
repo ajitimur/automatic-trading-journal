@@ -6,12 +6,13 @@ that catches up several days records that it did (§13.1). Advancing moves the
 per-book cursor to the run's as-of date; then, **per book**, the passes run.
 
 **The relay pass runs once, ahead of the books**: it pulls the trader's Stop
-Declarations from the Telegram relay, files them in the raw archive and records
-them, and only then acknowledges them (ADR 0011). One relay carries both books,
-so its run row sits under no book. Nothing binds yet.
+Declarations and forwarded TC PDFs from the Telegram relay, files them in the
+raw archive, records the declarations, drops the TCs into the Fill ledger, and
+only then acknowledges them (ADR 0011). One relay carries both books, so its run
+row sits under no book. Nothing binds yet.
 
 **Fill intake is never gated either**: it pulls the broker's own trade export
-into the Fill ledger (§4.1, US only — the IDX TC is hand-dropped by design,
+into the Fill ledger (§4.1, US only — the IDX TC is forwarded or hand-dropped,
 §13.2). Fills are facts about what the trader did and do not depend on the bar
 series having caught up. The **enrichment** passes — regime, counterfactual,
 freeze — then run, each **gating on whether that book's prior trading day has
@@ -182,9 +183,9 @@ def _pass_intake(conn, book: str, as_of: str) -> str:
 
     US only. §4.1 specifies the Activity Flex Query "runs unattended: no browser,
     no 2FA" — that is the whole reason IBKR is treated differently from Stockbit,
-    whose TC is deliberately hand-dropped (§13.2). Until this pass existed the
-    unattended half was specified and never wired, so the US ledger silently went
-    stale between manual `journal fetch` runs.
+    whose TC the trader forwards or hand-drops (§13.2, ADR 0011). Until this pass
+    existed the unattended half was specified and never wired, so the US ledger
+    silently went stale between manual `journal fetch` runs.
 
     **This does not breach the one-door rule** (SPEC §5.1). It appends *Fills*,
     which are facts from the broker; no Trade is derived and nothing is committed
@@ -195,7 +196,7 @@ def _pass_intake(conn, book: str, as_of: str) -> str:
     close having landed, and a book whose bars are late still wants its fills.
     """
     if book != books.US:
-        return "not applicable — the IDX TC is hand-dropped (SPEC §13.2)"
+        return "not applicable — the IDX TC is forwarded to the relay or hand-dropped (SPEC §13.2)"
     query_id = flex_client.default_query_id()
     if not query_id:
         return (
@@ -209,7 +210,7 @@ def _pass_intake(conn, book: str, as_of: str) -> str:
 
 
 def _pass_relay(conn, relay) -> PassOutcome:
-    """Pull the trader's Stop Declarations from the relay and file them (#49).
+    """Pull the trader's Stop Declarations and forwarded TCs from the relay (#49, #52).
 
     Not book-scoped: one relay carries both books, so it runs once per run,
     ahead of the books, under :data:`relay_intake.NO_BOOK`. Ungated for the

@@ -85,6 +85,18 @@
         "setup": "other",
         "entry_date": "2026-10-13"
       }
+    },
+    {
+      "id": "583201008",
+      "telegram_at": "2026-10-13T11:20:00Z",
+      "text": "",
+      "parse": {
+        "kind": "document",
+        "book": "IDX",
+        "file_id": "BQACAgUAAxkBAAIBCGcTCtc13102026",
+        "file_name": "TC_13102026.pdf",
+        "file_size": 48213
+      }
     }
   ]
 }

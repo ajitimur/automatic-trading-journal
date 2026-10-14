@@ -143,7 +143,7 @@ def cmd_drop(args: argparse.Namespace) -> int:
         # Archive the TC verbatim first (SPEC §13.5): a quarantined document is
         # exactly what a later parser fix needs to be re-run over, so it is kept
         # even though nothing lands in the ledger.
-        _archive_source_file(db_path, book="IDX", kind="stockbit-tc", path=args.file)
+        _archive_source_file(db_path, book=stockbit.BOOK, kind=stockbit.RAW_KIND, path=args.file)
         inserted = fills.import_stockbit_file(conn, args.file)
         total = conn.execute("SELECT COUNT(*) AS n FROM fill").fetchone()["n"]
     except stockbit.QuarantineError as exc:

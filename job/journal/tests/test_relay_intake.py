@@ -13,14 +13,40 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import unittest.mock
 
-from journal import books, db, fills, flex
+from journal import books, db, fills, flex, stockbit
 from journal.declarations import StopDeclarationStore
 from journal.run import execute_run
 
 FIXTURE = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "docs", "samples", "relay-pull-fixture.json"
 )
+
+
+SAMPLES = os.path.join(os.path.dirname(__file__), "..", "..", "..", "docs", "samples")
+# The layout text of a TC stands in for its PDF, as it does for `journal drop`:
+# the intake reads content without the %PDF magic as already-extracted text.
+TC_FIXTURE = os.path.join(SAMPLES, "stockbit-tc-fixture.txt")
+TC_SHIFTED = os.path.join(SAMPLES, "stockbit-tc-column-shift-fixture.txt")
+TC_FIXTURE_FILLS = 9
+
+# The shared fixture's forwarded TC.
+FIXTURE_TC_ID = "583201008"
+
+
+def _tc_bytes(path):
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _forwarded(relay_id, telegram_at="2026-10-13T11:20:00Z"):
+    return {
+        "id": relay_id,
+        "telegram_at": telegram_at,
+        "text": "",
+        "parse": {"kind": "document", "book": "IDX", "file_id": f"f-{relay_id}", "file_name": "TC.pdf"},
+    }
 
 
 def _fixture_items():
@@ -30,6 +56,10 @@ def _fixture_items():
 
 def _fixture_ids():
     return [i["id"] for i in _fixture_items()]
+
+
+def _declaration_ids():
+    return [i["id"] for i in _fixture_items() if i["parse"]["kind"] != "document"]
 
 
 def _fill(ref, book, symbol, when):
@@ -49,14 +79,23 @@ class FakeRelay:
     the moment the acknowledgement goes out.
     """
 
-    def __init__(self, items, *, fail_pull=None, fail_ack=None, on_ack=None, fail_push=None):
+    def __init__(
+        self, items, *, fail_pull=None, fail_ack=None, on_ack=None, fail_push=None, documents=None
+    ):
         self.items = list(items)
         self.fail_pull = fail_pull
         self.fail_ack = fail_ack
         self.on_ack = on_ack
         self.fail_push = fail_push
+        # The bytes served per document item id; any other id fails to fetch.
+        self.documents = {FIXTURE_TC_ID: _tc_bytes(TC_FIXTURE)} if documents is None else documents
         self.acked: list[list[str]] = []
         self.pushed: list[list[str]] = []
+
+    def document(self, item_id):
+        if item_id not in self.documents:
+            raise OSError(f"relay answered HTTP 502 for document {item_id}")
+        return self.documents[item_id]
 
     def pull(self):
         if self.fail_pull is not None:
@@ -77,7 +116,7 @@ class FakeRelay:
         self.pushed.append(list(symbols))
 
 
-class RelayIntakeTest(unittest.TestCase):
+class _RunTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmp.name, "journal.db")
@@ -100,6 +139,8 @@ class RelayIntakeTest(unittest.TestCase):
             "SELECT * FROM run_pass WHERE run_id = ? AND name = 'relay'", (run_id,)
         ).fetchone()
 
+
+class RelayIntakeTest(_RunTestCase):
     def test_every_fixture_item_is_recorded_as_an_event_of_its_kind(self):
         execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
 
@@ -167,10 +208,10 @@ class RelayIntakeTest(unittest.TestCase):
             "SELECT book, kind, content FROM raw_document WHERE kind = 'relay-item' ORDER BY id"
         ).fetchall()
         self.assertEqual([json.loads(r["content"]) for r in rows], items)
-        self.assertEqual([r["book"] for r in rows], ["IDX"] * 5 + ["US"] * 2)
+        self.assertEqual([r["book"] for r in rows], ["IDX"] * 5 + ["US"] * 2 + ["IDX"])
 
         files = sorted(os.listdir(os.path.join(self.archive_dir, "relay-item")))
-        self.assertEqual(len(files), 7)
+        self.assertEqual(len(files), 8)
         archived = []
         for name in files:
             with open(os.path.join(self.archive_dir, "relay-item", name), encoding="utf-8") as fh:
@@ -206,7 +247,7 @@ class RelayIntakeTest(unittest.TestCase):
         execute_run(self.conn, as_of="2026-10-14", relay=relay)
 
         self.assertEqual(relay.acked, [_fixture_ids()])
-        self.assertEqual(seen_at_ack, [_fixture_ids()])
+        self.assertEqual(seen_at_ack, [_declaration_ids()])
 
     def test_a_run_that_fails_to_acknowledge_is_safe_to_repeat(self):
         items = _fixture_items()
@@ -225,7 +266,7 @@ class RelayIntakeTest(unittest.TestCase):
         raw = self.conn.execute(
             "SELECT COUNT(*) c FROM raw_document WHERE kind = 'relay-item'"
         ).fetchone()["c"]
-        self.assertEqual(raw, 7)
+        self.assertEqual(raw, 8)
         self.assertEqual(relay.items, [])
 
     def test_the_run_row_states_how_many_items_were_pulled_and_archived(self):
@@ -233,8 +274,8 @@ class RelayIntakeTest(unittest.TestCase):
 
         row = self._relay_row(result.run_id)
         self.assertEqual(row["status"], "ran")
-        self.assertIn("7 item(s) pulled", row["detail"])
-        self.assertIn("7 archived", row["detail"])
+        self.assertIn("8 item(s) pulled", row["detail"])
+        self.assertIn("8 archived", row["detail"])
         self.assertIn("7 declaration event(s) recorded", row["detail"])
 
     def test_an_empty_relay_pulls_nothing_and_acknowledges_nothing(self):
@@ -276,7 +317,7 @@ class RelayIntakeTest(unittest.TestCase):
             "id": "583201099",
             "telegram_at": "2026-10-13T19:00:00Z",
             "text": "",
-            "parse": {"kind": "document"},
+            "parse": {"kind": "reply"},
         }
         relay = FakeRelay([*_fixture_items(), other])
         result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
@@ -284,8 +325,8 @@ class RelayIntakeTest(unittest.TestCase):
         self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
         self.assertEqual(relay.acked, [[*_fixture_ids(), "583201099"]])
         detail = self._relay_row(result.run_id)["detail"]
-        self.assertIn("8 item(s) pulled", detail)
-        self.assertIn("8 archived", detail)
+        self.assertIn("9 item(s) pulled", detail)
+        self.assertIn("9 archived", detail)
         self.assertIn("7 declaration event(s) recorded", detail)
 
     def test_a_malformed_item_of_any_known_kind_is_archived_but_left_at_the_relay(self):
@@ -310,7 +351,7 @@ class RelayIntakeTest(unittest.TestCase):
         self.assertIn("4 item(s) malformed", row["detail"])
         for relay_id in ("b1", "b2", "b3", "b4"):
             self.assertIn(relay_id, row["detail"])
-        self.assertIn("11 archived", row["detail"])
+        self.assertIn("12 archived", row["detail"])
         self.assertEqual(relay.acked, [_fixture_ids()])
         self.assertEqual([i["id"] for i in relay.items], ["b1", "b2", "b3", "b4"])
         self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
@@ -356,6 +397,149 @@ class RelayIntakeTest(unittest.TestCase):
         self.assertIn("7 declaration event(s) recorded", row["detail"])
         self.assertEqual(relay.acked, [_fixture_ids()])
         self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
+
+
+class ForwardedTcTest(_RunTestCase):
+    """A TC PDF forwarded to the bot goes through the hand-drop path (#52)."""
+
+    def _fill_count(self):
+        return self.conn.execute(
+            "SELECT COUNT(*) c FROM fill WHERE source = 'stockbit'"
+        ).fetchone()["c"]
+
+    def _tc_documents(self):
+        return self.conn.execute(
+            "SELECT book, content FROM raw_document WHERE kind = 'stockbit-tc'"
+        ).fetchall()
+
+    def _archived_tcs(self):
+        folder = os.path.join(self.archive_dir, "stockbit-tc")
+        return sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+
+    def test_the_fixture_tc_lands_its_fills_and_is_archived(self):
+        relay = FakeRelay(_fixture_items())
+        result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertEqual(self._fill_count(), TC_FIXTURE_FILLS)
+        [doc] = self._tc_documents()
+        self.assertEqual(doc["book"], "IDX")
+        self.assertEqual(doc["content"], _tc_bytes(TC_FIXTURE).decode("utf-8"))
+        [archived] = self._archived_tcs()
+        with open(os.path.join(self.archive_dir, "stockbit-tc", archived), "rb") as fh:
+            self.assertEqual(fh.read(), _tc_bytes(TC_FIXTURE))
+        self.assertEqual(relay.acked, [_fixture_ids()])
+        row = self._relay_row(result.run_id)
+        self.assertEqual(row["status"], "ran")
+        self.assertIn(f"1 TC PDF(s) taken in, {TC_FIXTURE_FILLS} new fill(s)", row["detail"])
+
+    def test_a_pdf_is_extracted_with_pdftotext_before_it_is_parsed(self):
+        extracted = []
+
+        def fake_extract(path):
+            with open(path, "rb") as fh:
+                extracted.append(fh.read())
+            return _tc_bytes(TC_FIXTURE).decode("utf-8")
+
+        pdf = b"%PDF-1.4 the real thing"
+        relay = FakeRelay([_forwarded("p1")], documents={"p1": pdf})
+        with unittest.mock.patch("journal.stockbit.extract_text", fake_extract):
+            execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertEqual(extracted, [pdf])
+        self.assertEqual(self._fill_count(), TC_FIXTURE_FILLS)
+        [archived] = self._archived_tcs()
+        self.assertTrue(archived.endswith(".pdf"))
+
+    def test_a_pdf_with_bytes_before_its_header_is_still_read_as_a_pdf(self):
+        # Readers find %PDF anywhere in the first 1024 bytes, so a mailer's
+        # preamble does not make a TC text.
+        pdf = b"\r\n\xef\xbb\xbf junk\n%PDF-1.4 the real thing"
+        relay = FakeRelay([_forwarded("p2")], documents={"p2": pdf})
+        with unittest.mock.patch(
+            "journal.stockbit.extract_text", lambda path: _tc_bytes(TC_FIXTURE).decode("utf-8")
+        ):
+            execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertEqual(self._fill_count(), TC_FIXTURE_FILLS)
+        [archived] = self._archived_tcs()
+        self.assertTrue(archived.endswith(".pdf"))
+
+    def test_forwarding_the_same_tc_twice_adds_no_fills(self):
+        tc = _tc_bytes(TC_FIXTURE)
+        relay = FakeRelay([_forwarded("t1")], documents={"t1": tc, "t2": tc})
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+        relay.items = [_forwarded("t2", "2026-10-13T11:40:00Z")]
+        second = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertEqual(self._fill_count(), TC_FIXTURE_FILLS)
+        self.assertEqual(len(self._tc_documents()), 1)
+        self.assertEqual(len(self._archived_tcs()), 1)
+        self.assertIn("1 TC PDF(s) taken in, 0 new fill(s)", self._relay_row(second.run_id)["detail"])
+
+    def test_forwarding_a_tc_already_dropped_by_hand_adds_no_fills(self):
+        fills.import_stockbit_file(self.conn, TC_FIXTURE)
+        self.conn.commit()
+        execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
+
+        self.assertEqual(self._fill_count(), TC_FIXTURE_FILLS)
+        self.assertEqual(len(self._tc_documents()), 1)
+
+    def test_a_tc_failing_the_fee_identity_is_quarantined_as_a_hand_dropped_one_is(self):
+        relay = FakeRelay([_forwarded("q1")], documents={"q1": _tc_bytes(TC_SHIFTED)})
+        result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        # Zero fills, the document kept in both halves of the raw tier for a
+        # parser fix to re-run over, and the run record says so loudly.
+        self.assertEqual(self._fill_count(), 0)
+        self.assertEqual(len(self._tc_documents()), 1)
+        self.assertEqual(len(self._archived_tcs()), 1)
+        row = self._relay_row(result.run_id)
+        self.assertEqual(row["status"], "error")
+        self.assertIn("q1 quarantined", row["detail"])
+        # Archived, so the relay can let it go: re-pulling it would only
+        # quarantine it again.
+        self.assertEqual(relay.acked, [["q1"]])
+
+    def test_a_pdf_that_is_not_a_tc_is_archived_reported_and_let_go(self):
+        relay = FakeRelay([_forwarded("n1")], documents={"n1": b"a bank statement"})
+        result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertEqual(self._fill_count(), 0)
+        row = self._relay_row(result.run_id)
+        self.assertEqual(row["status"], "error")
+        self.assertIn("n1 not taken in", row["detail"])
+        self.assertEqual(relay.acked, [["n1"]])
+
+    def test_a_document_the_relay_cannot_serve_stays_there_for_the_next_run(self):
+        relay = FakeRelay(_fixture_items(), documents={})
+        first = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        row = self._relay_row(first.run_id)
+        self.assertEqual(row["status"], "error")
+        self.assertIn(f"{FIXTURE_TC_ID} could not be fetched", row["detail"])
+        self.assertEqual(relay.acked, [_fixture_ids()[:-1]])
+        self.assertEqual(self._fill_count(), 0)
+
+        relay.documents = {FIXTURE_TC_ID: _tc_bytes(TC_FIXTURE)}
+        second = execute_run(self.conn, as_of="2026-10-15", relay=relay)
+        self.assertEqual(self._relay_row(second.run_id)["status"], "ran")
+        self.assertEqual(self._fill_count(), TC_FIXTURE_FILLS)
+        self.assertEqual(relay.items, [])
+
+    def test_a_pdf_that_cannot_be_extracted_stays_at_the_relay(self):
+        def broken(path):
+            raise stockbit.StockbitError("pdftotext not found")
+
+        relay = FakeRelay([_forwarded("x1")], documents={"x1": b"%PDF-1.4"})
+        with unittest.mock.patch("journal.stockbit.extract_text", broken):
+            result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        row = self._relay_row(result.run_id)
+        self.assertEqual(row["status"], "error")
+        self.assertIn("pdftotext not found", row["detail"])
+        self.assertEqual(relay.acked, [])
+        # Kept on the Mac all the same.
+        self.assertEqual(len(self._archived_tcs()), 1)
 
 
 class EventTableMigrationTest(unittest.TestCase):

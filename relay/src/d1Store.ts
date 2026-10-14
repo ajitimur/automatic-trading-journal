@@ -64,5 +64,19 @@ export function d1Store(db: D1Database): RelayStore {
         .bind(JSON.stringify(symbols))
         .run();
     },
+    async pdfDays() {
+      const { results } = await db.prepare('SELECT day FROM pdf_days').all<{ day: string }>();
+      return results.map((row) => row.day);
+    },
+    async putPdfDay(day) {
+      await db.prepare('INSERT OR IGNORE INTO pdf_days (day) VALUES (?)').bind(day).run();
+    },
+    async deletePdfDays(days) {
+      if (days.length === 0) return;
+      await db
+        .prepare('DELETE FROM pdf_days WHERE day IN (SELECT value FROM json_each(?))')
+        .bind(JSON.stringify(days))
+        .run();
+    },
   };
 }

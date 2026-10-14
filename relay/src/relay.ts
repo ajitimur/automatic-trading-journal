@@ -1,15 +1,20 @@
 // The relay (ADR 0011): the one component off the Mac. It receives the bot's
 // Telegram webhook, parses each Stop Declaration, replies at once with how it
-// read it, and holds it until the Mac pulls and acknowledges it. It holds no
-// broker credential and does no binding, gating or committing.
+// read it, and holds it until the Mac pulls and acknowledges it. A forwarded
+// TC PDF is held the same way, as Telegram's reference to it, and its day is
+// remembered for the evening reminder. It holds no broker credential and does
+// no binding, gating or committing.
 //
-// Written as a plain module over injected dependencies — Telegram sender,
+// Written as a plain module over injected dependencies — Telegram API,
 // store, clock, configuration — so the Worker runtime is a thin adapter
 // (worker.ts) and the tests run under `node --test` with fakes.
 
-export interface TelegramSender {
+// The Bot API calls the relay makes. The bot token stays behind this, on the
+// relay: the Mac sends and fetches a forwarded document through the relay.
+export interface Telegram {
   // Resolves to the sent message's Telegram message_id.
   sendMessage(chatId: number, text: string): Promise<number>;
+  downloadFile(fileId: string): Promise<Uint8Array>;
 }
 
 export interface RelayConfig {
@@ -22,7 +27,7 @@ export interface RelayConfig {
 }
 
 export interface RelayDeps {
-  telegram: TelegramSender;
+  telegram: Telegram;
   store: RelayStore;
   clock: () => Date;
   config: RelayConfig;
@@ -32,6 +37,9 @@ export interface Relay {
   fetch(request: Request): Promise<Response>;
   // The cron entry point: applies the TTLs.
   scheduled(): Promise<void>;
+  // Whether a TC PDF was forwarded on IDX trading day `day` (YYYY-MM-DD,
+  // Jakarta), for the evening reminder. Answers for the last 7 days only.
+  pdfArrivedOn(day: string): Promise<boolean>;
 }
 
 export type Book = 'IDX' | 'US';
@@ -71,6 +79,16 @@ export interface Undo {
   withdraws: string;
 }
 
+// A forwarded Stockbit TC PDF. The relay holds only Telegram's reference to
+// it; the Mac fetches the bytes through GET /documents/<id>.
+export interface TcDocument {
+  kind: 'document';
+  book: 'IDX';
+  file_id: string;
+  file_name?: string;
+  file_size?: number;
+}
+
 export type Declared = Declaration | Decline;
 
 type Parsed = Declared | { kind: 'undo' } | { kind: 'error'; reason: string };
@@ -83,6 +101,8 @@ interface TelegramUpdate {
     chat: { id: number };
     date: number;
     text?: string;
+    caption?: string;
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
   };
 }
 
@@ -93,8 +113,9 @@ export interface PullItem {
   id: string;
   // When Telegram received the message, UTC.
   telegram_at: string;
+  // The message text, or a document's caption ('' when it has none).
   text: string;
-  parse: Declared | Undo;
+  parse: Declared | Undo | TcDocument;
 }
 
 export interface StoredItem {
@@ -130,6 +151,11 @@ export interface RelayStore {
   deleteRecent(ids: string[]): Promise<void>;
   knownUsSymbols(): Promise<string[]>;
   setKnownUsSymbols(symbols: string[]): Promise<void>;
+  // The Jakarta dates a TC PDF was forwarded on. Adding one already held is a
+  // no-op.
+  pdfDays(): Promise<string[]>;
+  putPdfDay(day: string): Promise<void>;
+  deletePdfDays(days: string[]): Promise<void>;
 }
 
 // The key a declaration binds on, and replaces on.
@@ -161,13 +187,29 @@ export function createRelay(deps: RelayDeps): Relay {
     const ok = new Response(null, { status: 200 });
     const update = (await readJson(request)) as TelegramUpdate | null;
     const message = update?.message;
-    if (!update || !message || message.from?.id !== config.userId || typeof message.text !== 'string') return ok;
-    const text = message.text;
+    if (!update || !message || message.from?.id !== config.userId) return ok;
     const sentAt = new Date(message.date * 1000);
     const id = String(update.update_id);
     const telegramAt = isoSeconds(sentAt);
-    const hold = (parse: Declared | Undo) =>
+    const holdWithText = (text: string) => (parse: PullItem['parse']) =>
       store.put({ item: { id, telegram_at: telegramAt, text, parse }, stored_at: clock().toISOString() });
+
+    if (message.document) {
+      const doc = message.document;
+      let reply = '✗ Only Stockbit TC PDFs are accepted';
+      if (isPdf(doc)) {
+        const { file_name, file_size } = doc;
+        await holdWithText(message.caption ?? '')({ kind: 'document', book: 'IDX', file_id: doc.file_id, file_name, file_size });
+        // Kept apart from the item, which goes once the Mac acknowledges it.
+        await store.putPdfDay(dateIn(sentAt, EXCHANGE_TZ.IDX));
+        reply = `✓ Got ${file_name ?? 'the PDF'}; it goes in on the next run`;
+      }
+      await telegram.sendMessage(message.chat.id, reply);
+      return ok;
+    }
+    if (typeof message.text !== 'string') return ok;
+    const text = message.text;
+    const hold = holdWithText(text);
 
     const parse = parseMessage(text, sentAt, new Set(await store.knownUsSymbols()));
     let reply: string;
@@ -240,9 +282,32 @@ export function createRelay(deps: RelayDeps): Relay {
     if (stale.length > 0) await store.deleteRecent(stale.map((r) => r.id));
   }
 
+  // A PDF day goes once it is more than RECENT_MS old in Jakarta days, long
+  // after the reminder for it could fire.
+  async function purgePdfDays(): Promise<void> {
+    const cutoff = dateIn(new Date(clock().getTime() - RECENT_MS), EXCHANGE_TZ.IDX);
+    const stale = (await store.pdfDays()).filter((day) => day < cutoff);
+    if (stale.length > 0) await store.deletePdfDays(stale);
+  }
+
   async function onPull(): Promise<Response> {
     const items = (await purgeExpired()).map((stored) => stored.item);
     return Response.json({ items });
+  }
+
+  // A held document's bytes, fetched from Telegram on demand and sent as
+  // base64 in JSON so the Mac's text-only transport carries them unchanged.
+  // Only while the item is held: once acknowledged or expired it is a 404.
+  async function onDocument(id: string): Promise<Response> {
+    const held = (await purgeExpired()).find((stored) => stored.item.id === id)?.item.parse;
+    if (held?.kind !== 'document') return new Response(null, { status: 404 });
+    let bytes: Uint8Array;
+    try {
+      bytes = await telegram.downloadFile(held.file_id);
+    } catch {
+      return new Response(null, { status: 502 });
+    }
+    return Response.json({ id, content_base64: base64(bytes) });
   }
 
   // Deleting an id the store no longer holds is a no-op, so a repeated
@@ -294,11 +359,17 @@ export function createRelay(deps: RelayDeps): Relay {
       if (route === 'POST /ack') return fromMac(request) ? onAcknowledge(request) : unauthorized();
       if (route === 'PUT /known-us-symbols') return fromMac(request) ? onKnownUs(request) : unauthorized();
       if (route === 'POST /send') return fromMac(request) ? onSend(request) : unauthorized();
+      const document = /^GET \/documents\/([^/]+)$/.exec(route);
+      if (document) return fromMac(request) ? onDocument(decodeURIComponent(document[1]!)) : unauthorized();
       return new Response(null, { status: 404 });
     },
     async scheduled() {
       await purgeExpired();
       await purgeRecent();
+      await purgePdfDays();
+    },
+    async pdfArrivedOn(day) {
+      return (await store.pdfDays()).includes(day);
     },
   };
 }
@@ -364,6 +435,12 @@ function parseMessage(text: string, sentAt: Date, knownUs: Set<string>): Parsed 
   return { kind: 'declaration', book, symbol, stop, ...withSetup, entry_date };
 }
 
+// The Stockbit TC is a PDF; the Mac's parse path takes nothing else. The name
+// covers a client that sends no MIME type.
+function isPdf(doc: { file_name?: string; mime_type?: string }): boolean {
+  return doc.mime_type === 'application/pdf' || /\.pdf$/i.test(doc.file_name ?? '');
+}
+
 // Oldest said first; Telegram's update ids break a tie within one second.
 function bySaid(a: RecentDeclaration, b: RecentDeclaration): number {
   return a.telegram_at.localeCompare(b.telegram_at) || Number(a.id) - Number(b.id);
@@ -374,6 +451,16 @@ function dateIn(instant: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(
     instant,
   );
+}
+
+// btoa over a binary string, in chunks so a large file never overflows the
+// argument list. Workers have btoa but no Buffer.
+function base64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
 }
 
 // Telegram dates are whole seconds; keep the wire timestamp that way.

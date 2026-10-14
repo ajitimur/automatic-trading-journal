@@ -26,6 +26,7 @@ export function memoryStore(): RelayStore {
   const items = new Map<string, StoredItem>();
   const recent = new Map<string, RecentDeclaration>();
   let knownUs: string[] = [];
+  const pdfDays = new Set<string>();
   return {
     async put(stored) {
       if (!items.has(stored.item.id)) items.set(stored.item.id, stored);
@@ -51,18 +52,30 @@ export function memoryStore(): RelayStore {
     async setKnownUsSymbols(symbols) {
       knownUs = [...symbols];
     },
+    async pdfDays() {
+      return [...pdfDays];
+    },
+    async putPdfDay(day) {
+      pdfDays.add(day);
+    },
+    async deletePdfDays(days) {
+      for (const day of days) pdfDays.delete(day);
+    },
   };
 }
 
 export interface Harness {
   relay: Relay;
   sent: { chatId: number; text: string }[];
+  // The bytes Telegram serves for each file_id; any other id fails to download.
+  files: Map<string, Uint8Array>;
   setNow(iso: string): void;
   store: RelayStore;
 }
 
 export function harness(nowIso = '2026-10-13T03:00:00Z', store: RelayStore = memoryStore()): Harness {
   const sent: { chatId: number; text: string }[] = [];
+  const files = new Map<string, Uint8Array>();
   let now = new Date(nowIso);
   const relay = createRelay({
     telegram: {
@@ -70,15 +83,54 @@ export function harness(nowIso = '2026-10-13T03:00:00Z', store: RelayStore = mem
         sent.push({ chatId, text });
         return sent.length;
       },
+      async downloadFile(fileId) {
+        const bytes = files.get(fileId);
+        if (!bytes) throw new Error(`Telegram has no file ${fileId}`);
+        return bytes;
+      },
     },
     store,
     clock: () => now,
     config: { webhookSecret: WEBHOOK_SECRET, macSecret: MAC_SECRET, userId: TRADER },
   });
-  return { relay, sent, store, setNow: (iso) => (now = new Date(iso)) };
+  return { relay, sent, files, store, setNow: (iso) => (now = new Date(iso)) };
 }
 
 let nextUpdateId = 1000;
+
+export interface DocumentInfo {
+  file_name?: string;
+  mime_type?: string;
+  file_id?: string;
+  file_size?: number;
+}
+
+// A Telegram update carrying a document, as the Share sheet forwards one.
+export function documentUpdate(document: DocumentInfo, sentAtIso: string, fromId = TRADER, updateId = nextUpdateId++) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: fromId, is_bot: false, first_name: 'T' },
+      chat: { id: fromId, type: 'private' },
+      date: Math.floor(Date.parse(sentAtIso) / 1000),
+      document: { file_id: `file-${updateId}`, file_unique_id: `unique-${updateId}`, ...document },
+    },
+  };
+}
+
+// The trader forwards a document at `sentAtIso`; returns the relay's reply.
+export async function forward(
+  h: Harness,
+  document: DocumentInfo,
+  sentAtIso: string,
+  updateId?: number,
+  fromId = TRADER,
+): Promise<string | undefined> {
+  const before = h.sent.length;
+  await h.relay.fetch(webhook(documentUpdate(document, sentAtIso, fromId, updateId)));
+  return h.sent.slice(before).at(-1)?.text;
+}
 
 // A Telegram text-message update from `fromId`, sent at `sentAtIso`.
 export function update(text: string, sentAtIso: string, fromId = TRADER, updateId = nextUpdateId++) {
@@ -130,7 +182,17 @@ export async function pull(h: Harness): Promise<PullBody> {
 export async function sendFixtureMessages(h: Harness): Promise<PullBody> {
   const fixture = JSON.parse(readFileSync(PULL_FIXTURE, 'utf8')) as PullBody;
   for (const item of fixture.items) {
-    await h.relay.fetch(webhook(update(item.text, item.telegram_at, TRADER, Number(item.id))));
+    const { parse } = item;
+    const body =
+      parse.kind === 'document'
+        ? documentUpdate(
+            { file_id: parse.file_id, file_name: parse.file_name, file_size: parse.file_size, mime_type: 'application/pdf' },
+            item.telegram_at,
+            TRADER,
+            Number(item.id),
+          )
+        : update(item.text, item.telegram_at, TRADER, Number(item.id));
+    await h.relay.fetch(webhook(body));
   }
   return fixture;
 }

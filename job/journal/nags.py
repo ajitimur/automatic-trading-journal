@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional
 
-from . import bars, books
+from . import bars, books, stockbit
 
 
 @dataclass
@@ -127,7 +127,7 @@ def _idx_intake(conn, as_of: str) -> List[Nag]:
     # intake on a book that has not seen a TC in weeks.
     row = conn.execute(
         "SELECT MAX(fetched_at) f FROM raw_document WHERE book = ? AND kind = ?",
-        (books.IDX, "stockbit-tc"),
+        (books.IDX, stockbit.RAW_KIND),
     ).fetchone()
     last = row["f"] if row else None
     # ``fetched_at`` carries a full timestamp; the banner states a day (§11.4).

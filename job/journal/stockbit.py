@@ -43,6 +43,10 @@ from . import books
 SOURCE = "stockbit"
 BOOK = books.IDX
 
+# The raw-tier kind a TC is filed under, however it arrived (a hand drop or a
+# forward to the relay), so the same TC is archived and recorded once.
+RAW_KIND = "stockbit-tc"
+
 # Stockbit fills carry no restatement/version concept (unlike IBKR's exec seq):
 # a corrected TC re-drops as a new content hash, never as a higher revision.
 REVISION = 0
