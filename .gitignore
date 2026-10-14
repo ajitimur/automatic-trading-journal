@@ -16,6 +16,7 @@ ibkr-flex-sample.xml
 .claude/settings.local.json
 .claude/worktrees/
 .claude/skills/
+.agents/
 
 # Build skeleton
 node_modules/
