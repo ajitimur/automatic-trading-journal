@@ -1,4 +1,4 @@
-"""Pull and acknowledge relay items over the wire (ADR 0011, #49).
+"""Pull and acknowledge relay items, and message the trader, over the wire (ADR 0011).
 
 The relay's Mac-facing contract, as pinned by
 ``docs/samples/relay-pull-fixture.json``:
@@ -11,7 +11,9 @@ The relay's Mac-facing contract, as pinned by
   forwarded TC PDF the relay still holds (#52).
 * ``PUT /known-us-symbols`` takes ``{"symbols": [...]}`` and replaces the list
   the relay reads a 4-letter symbol as US by (#51).
-* All four need ``Authorization: Bearer <MAC_SECRET>``.
+* ``POST /send`` takes ``{"text": ...}``, messages the trader, and answers
+  ``{"message_id": n}`` (#53).
+* All five need ``Authorization: Bearer <MAC_SECRET>``.
 
 The relay sits on the open internet, behind the same ISP whose DNS interception
 the Flex client was built against, so it takes the same path: each call resolves
@@ -81,15 +83,9 @@ class RelayClient:
         ``{"items": []}``.
         """
         response = self._send("GET", "/pull")
-        if not response.text.strip():
-            raise EmptyResponseError(
-                f"empty response body from {self._host()} — an empty relay "
-                f"answers with no items, not with nothing (fix the network)"
-            )
-        try:
-            payload = json.loads(response.text)
-        except ValueError as exc:
-            raise RelayError(f"relay pull is not JSON: {response.text[:200]!r}") from exc
+        payload = self._json(
+            response, "pull", "an empty relay answers with no items, not with nothing"
+        )
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             raise RelayError(f"relay pull has no items list: {response.text[:200]!r}")
@@ -119,20 +115,48 @@ class RelayClient:
         The relay fetches them from Telegram on demand and sends them base64 in
         JSON, so the transport's text body carries a PDF unchanged.
         """
-        path = f"/documents/{urllib.parse.quote(item_id, safe='')}"
-        response = self._send("GET", path)
-        if not response.text.strip():
-            raise EmptyResponseError(
-                f"empty response body from {self._host()} for document "
-                f"{item_id} (fix the network)"
-            )
+        response = self._send("GET", f"/documents/{urllib.parse.quote(item_id, safe='')}")
+        payload = self._json(
+            response, f"document {item_id}", "a held document answers with its bytes, not with nothing"
+        )
         try:
-            payload = json.loads(response.text)
-            return base64.b64decode(payload["content_base64"], validate=True)
+            return base64.b64decode(payload["content_base64"], validate=True)  # type: ignore[index]
         except (ValueError, KeyError, TypeError) as exc:
             raise RelayError(
                 f"relay document {item_id} is not one: {response.text[:200]!r}"
             ) from exc
+
+    def send(self, text: str) -> int:
+        """Message the trader through the relay and return Telegram's message id.
+
+        The relay holds the bot token, so the Mac never does (#53). An empty body
+        is the ISP's interception, not a delivery, so it raises like a pull does.
+        """
+        response = self._send(
+            "POST",
+            "/send",
+            body=json.dumps({"text": text}).encode("utf-8"),
+            content_type="application/json",
+        )
+        payload = self._json(
+            response, "send", "a sent message answers with its id, not with nothing"
+        )
+        message_id = payload.get("message_id") if isinstance(payload, dict) else None
+        if isinstance(message_id, bool) or not isinstance(message_id, int):
+            raise RelayError(f"relay send has no message id: {response.text[:200]!r}")
+        return message_id
+
+    def _json(self, response: HttpResponse, call: str, empty_means: str) -> object:
+        """The parsed body. An empty one is the ISP's interception, never an answer."""
+        if not response.text.strip():
+            raise EmptyResponseError(
+                f"empty response body from {self._host()} — {empty_means} "
+                f"(fix the network)"
+            )
+        try:
+            return json.loads(response.text)
+        except ValueError as exc:
+            raise RelayError(f"relay {call} is not JSON: {response.text[:200]!r}") from exc
 
     def _send(
         self,

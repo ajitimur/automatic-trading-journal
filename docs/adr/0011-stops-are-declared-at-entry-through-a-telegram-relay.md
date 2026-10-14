@@ -35,6 +35,8 @@ A Google Apps Script polling Gmail would make IDX intake need no action from the
 
 **The Mac now talks to two more hosts**, the relay and `api.telegram.org` for outbound nags, and both go through the DoH transport built for Flex.
 
+_Amended by #53:_ outbound nags go through the relay (`POST /send`) instead of straight to `api.telegram.org`, so the bot token stays on the Worker and the Mac talks to one more host, not two.
+
 **The relay remembers the last week's declarations, beyond the acknowledgement.** A resend has to say what it replaced, and `/undo` has to know what it withdraws, even after the Mac has pulled the earlier message. So the relay keeps the latest declaration per (book, symbol, entry date) for 7 days, apart from the items it deletes on acknowledgement. Seven days covers the 3-trading-day lapse window across a weekend or a holiday, after which no correction can matter. This is a short memory, not a second copy of the history. The relay still cannot know what has bound, so a replace or `/undo` that arrives after binding is answered on the Mac's side.
 
 **Book inference can misfire on 4-letter US tickers.** A 4-letter symbol reads as IDX unless the journal has seen it on the US book, which means the Mac supplies the relay a small list of known US symbols. The acknowledgement always echoes the Book, so a wrong guess is visible before it binds.

@@ -10,9 +10,10 @@
 // (worker.ts) and the tests run under `node --test` with fakes.
 
 // The Bot API calls the relay makes. The bot token stays behind this, on the
-// relay: the Mac fetches a forwarded document through the relay, not Telegram.
+// relay: the Mac sends and fetches a forwarded document through the relay.
 export interface Telegram {
-  sendMessage(chatId: number, text: string): Promise<void>;
+  // Resolves to the sent message's Telegram message_id.
+  sendMessage(chatId: number, text: string): Promise<number>;
   downloadFile(fileId: string): Promise<Uint8Array>;
 }
 
@@ -331,6 +332,18 @@ export function createRelay(deps: RelayDeps): Relay {
     return new Response(null, { status: 204 });
   }
 
+  // The Mac's outbound channel (#53): the journal messages the trader through
+  // here, so the bot token stays on the Worker. A private chat's id is the
+  // user's id, so the only recipient is the trader. A Telegram failure throws,
+  // and the Mac reads the 5xx as a failed send.
+  async function onSend(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    const text = body?.text;
+    if (typeof text !== 'string' || text === '') return new Response(null, { status: 400 });
+    const messageId = await telegram.sendMessage(config.userId, text);
+    return Response.json({ message_id: messageId });
+  }
+
   const fromTelegram = (request: Request) =>
     secretMatches(request.headers.get('x-telegram-bot-api-secret-token'), config.webhookSecret);
   const fromMac = (request: Request) =>
@@ -345,6 +358,7 @@ export function createRelay(deps: RelayDeps): Relay {
       if (route === 'GET /pull') return fromMac(request) ? onPull() : unauthorized();
       if (route === 'POST /ack') return fromMac(request) ? onAcknowledge(request) : unauthorized();
       if (route === 'PUT /known-us-symbols') return fromMac(request) ? onKnownUs(request) : unauthorized();
+      if (route === 'POST /send') return fromMac(request) ? onSend(request) : unauthorized();
       const document = /^GET \/documents\/([^/]+)$/.exec(route);
       if (document) return fromMac(request) ? onDocument(decodeURIComponent(document[1]!)) : unauthorized();
       return new Response(null, { status: 404 });

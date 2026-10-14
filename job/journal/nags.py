@@ -4,7 +4,9 @@ The job "carries the nags" alongside enrichment: **missing stop, missing setup,
 missing IDX equity, last IDX drop**. Each is phrased as a plain fact, because a
 genuine no-trade stretch is normal for a swing trader and a crying-wolf warning
 is ignored within a month (§11.4). They are recorded on the run and read off the
-banner on next open — there is no push channel (§13.6).
+banner on next open (§13.6). §13.6 also ruled out a push channel; the Telegram
+bot (ADR 0011, ADR 0012) has since become one, carrying per-Trade messages of its
+own (:mod:`journal.messages`). These banner facts stay as they are.
 
 A missing stop or setup is only a fact *before freeze*: once the freeze fuse
 locks the hand-entered fields (§3.5) the hole can no longer be filled, so a frozen
