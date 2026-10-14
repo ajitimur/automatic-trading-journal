@@ -21,6 +21,8 @@ function telegramSender(token: string): TelegramSender {
         body: JSON.stringify({ chat_id: chatId, text }),
       });
       if (!res.ok) throw new Error(`Telegram sendMessage failed: ${res.status}`);
+      const body = (await res.json()) as { result: { message_id: number } };
+      return body.result.message_id;
     },
   };
 }

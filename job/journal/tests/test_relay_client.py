@@ -143,6 +143,42 @@ class KnownUsPushTest(unittest.TestCase):
             _client(transport).push_known_us_symbols(["META"])
 
 
+class SendTest(unittest.TestCase):
+    def test_send_posts_the_text_with_the_mac_secret_and_returns_the_message_id(self):
+        transport = FakeTransport('{"message_id": 812}')
+        message_id = _client(transport, secret="s3cret").send("IDX BBRI: no stop declared")
+
+        self.assertEqual(message_id, 812)
+        [call] = transport.calls
+        self.assertEqual(call["method"], "POST")
+        self.assertEqual(call["url"], f"{BASE}/send")
+        self.assertEqual(call["headers"]["Authorization"], "Bearer s3cret")
+        self.assertEqual(call["headers"]["Content-Type"], "application/json")
+        self.assertEqual(json.loads(call["body"]), {"text": "IDX BBRI: no stop declared"})
+
+    def test_send_connects_only_to_the_doh_answer(self):
+        resolver = FakeResolver()
+        transport = FakeTransport('{"message_id": 1}')
+        _client(transport, resolver=resolver).send("hi")
+        self.assertEqual(resolver.asked, [HOST])
+        self.assertEqual(transport.calls[0]["addresses"], ADDRESSES)
+
+    def test_send_checks_for_interception_too(self):
+        transport = FakeTransport('{"message_id": 1}', connected_ip="10.0.0.1")
+        with self.assertRaises(flex_client.InterceptionError):
+            _client(transport).send("hi")
+
+    def test_an_empty_send_body_is_an_error_not_a_sent_message(self):
+        # The ISP's interception answers with nothing; that is not a delivery.
+        with self.assertRaises(flex_client.EmptyResponseError):
+            _client(FakeTransport("")).send("hi")
+
+    def test_a_send_body_without_a_message_id_is_an_error(self):
+        for text in ("not json", '{"ok": true}', '{"message_id": "7"}'):
+            with self.assertRaises(relay_client.RelayError):
+                _client(FakeTransport(text)).send("hi")
+
+
 class DefaultClientTest(unittest.TestCase):
     def setUp(self):
         self._saved = os.environ.pop(relay_client.URL_ENV, None)

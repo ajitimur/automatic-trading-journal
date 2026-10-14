@@ -216,3 +216,31 @@ test('the relay pulls exactly the shared fixture from the messages it describes'
   const fixture = await sendFixtureMessages(h);
   assert.deepEqual(await pull(h), fixture);
 });
+
+// The Mac's outbound channel (#53): the journal messages the trader through the
+// relay, so the bot token never leaves the Worker.
+test('the Mac sends the trader a message and gets back its Telegram message id', async () => {
+  const h = harness();
+  const res = await h.relay.fetch(mac('/send', { method: 'POST', body: { text: 'IDX BBRI: no stop declared' } }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { message_id: 1 });
+  assert.deepEqual(h.sent, [{ chatId: TRADER, text: 'IDX BBRI: no stop declared' }]);
+});
+
+test('sending needs the Mac secret', async () => {
+  const h = harness();
+  for (const secret of [null, 'wrong', WEBHOOK_SECRET]) {
+    const res = await h.relay.fetch(mac('/send', { method: 'POST', body: { text: 'hi' }, secret }));
+    assert.equal(res.status, 401);
+  }
+  assert.deepEqual(h.sent, []);
+});
+
+test('a send without text is a 400 and messages nobody', async () => {
+  const h = harness();
+  for (const body of ['not json', '{}', '{"text": ""}', '{"text": 7}']) {
+    const res = await h.relay.fetch(rawPost('/send', body, { authorization: `Bearer ${MAC_SECRET}` }));
+    assert.equal(res.status, 400);
+  }
+  assert.deepEqual(h.sent, []);
+});

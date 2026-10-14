@@ -68,6 +68,7 @@ export function harness(nowIso = '2026-10-13T03:00:00Z', store: RelayStore = mem
     telegram: {
       async sendMessage(chatId, text) {
         sent.push({ chatId, text });
+        return sent.length;
       },
     },
     store,

@@ -33,6 +33,8 @@ import sqlite3
 from datetime import date, datetime
 from typing import Optional, Tuple
 
+from . import bars
+
 # The fixed setup vocabulary (SPEC §3.2). Accumulating ``other`` is the signal to
 # name a third setup — so a value outside these three is refused, never coerced.
 SETUP_VOCABULARY: Tuple[str, str, str] = ("base_breakout", "high_tight_flag", "other")
@@ -109,16 +111,46 @@ def _trading_days_since_entry(
     row = conn.execute(
         "SELECT book, symbol, entry_date FROM trade WHERE id = ?", (trade_id,)
     ).fetchone()
+    return _symbol_trading_days_after(
+        conn, row["book"], row["symbol"], row["entry_date"], as_of
+    )
+
+
+def _symbol_trading_days_after(
+    conn: sqlite3.Connection, book: str, symbol: str, entry_date: str, as_of: str
+) -> Optional[int]:
     n = conn.execute(
         "SELECT COUNT(*) AS n FROM bar "
         "WHERE book = ? AND symbol = ? AND date > ? AND date <= ?",
-        (row["book"], row["symbol"], row["entry_date"], as_of),
+        (book, symbol, entry_date, as_of),
     ).fetchone()["n"]
     have_any = conn.execute(
         "SELECT COUNT(*) AS n FROM bar WHERE book = ? AND symbol = ?",
-        (row["book"], row["symbol"]),
+        (book, symbol),
     ).fetchone()["n"]
     return n if have_any else None
+
+
+def grace_days_left(
+    conn: sqlite3.Connection, book: str, symbol: str, entry_date: str, as_of: str
+) -> Optional[int]:
+    """Trading days left in the grace window for an entry, ``0`` once it has closed.
+
+    For a Trade not yet committed, so it is keyed on the cohort rather than a
+    trade id. Counted off the symbol's own bars, as provenance is. Bars are only
+    fetched for committed Trades, so a first entry in a symbol usually has none.
+    In that case the Book's benchmark calendar stands in until they arrive.
+    ``None`` when neither is cached: the caller says the window cannot be
+    counted rather than guessing it in calendar days.
+    """
+    elapsed = _symbol_trading_days_after(conn, book, symbol, entry_date, as_of)
+    if elapsed is None:
+        elapsed = bars.book_trading_days_between(
+            conn, book, after=entry_date, through=as_of
+        )
+    if elapsed is None:
+        return None
+    return max(GRACE_TRADING_DAYS - elapsed, 0)
 
 
 def _derive_provenance(
