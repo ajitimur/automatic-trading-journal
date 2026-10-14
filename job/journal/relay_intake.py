@@ -98,6 +98,8 @@ class IntakeCounts:
     new_fills: int = 0
 
     def summary(self) -> str:
+        # The review banner reads "<n> item(s) pulled, " off the relay pass's
+        # detail as proof the relay answered (ui/src/review.ts). Keep the lead.
         return (
             f"{self.pulled} item(s) pulled, {self.archived} archived, "
             f"{self.recorded} declaration event(s) recorded, "

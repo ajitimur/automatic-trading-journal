@@ -42,7 +42,7 @@ function tradeFixture(over: Partial<ReviewTrade> = {}): ReviewTrade {
     id: 1, book: 'US', symbol: 'AVGO', entry_date: '2026-07-31',
     entry_qty: 60, entry_avg_price: 318.4, status: 'closed',
     stop: 302, setup: 'base_breakout', stop_provenance: 'recorded', frozen: 0,
-    stop_declined: 0,
+    stop_declined: 0, auto_committed: 0,
     reviewed_at: null, note: 'Took the partial a day late on purpose.',
     adr_pct: 3.1,
     exits: [
@@ -205,6 +205,90 @@ test('the banner states the remaining fuse and renders insufficient_history as n
   assert.match(html, /No action/);
   assert.match(html, /stated facts, not alarms/);
 });
+
+// ── an auto-committed Trade is marked, so the review is the human check on it (ADR 0012) ──
+test('an auto-committed Trade is marked in the list and the detail; a confirmed one is not', () => {
+  const auto = tradeFixture({ id: 5, symbol: 'BBRI', book: 'IDX', auto_committed: 1 });
+  const confirmed = tradeFixture({ id: 6, symbol: 'TLKM', book: 'IDX', auto_committed: 0 });
+
+  const autoHtml = renderReview(stateFixture({ weekTrades: [auto, confirmed], stragglers: [], openTrades: [], selected: '5' }));
+  const row = (html: string, id: number) => html.match(new RegExp(`<a class="ti[^"]*" href="\\?trade=${id}#work">[\\s\\S]*?</a>`))![0];
+  assert.match(row(autoHtml, 5), /auto-committed/);
+  assert.doesNotMatch(row(autoHtml, 6), /auto-committed/);
+  const detail = autoHtml.slice(autoHtml.indexOf('<div class="card">'));
+  assert.match(detail, /auto-committed/);
+
+  // Selecting the confirmed one: nothing on the surface claims an auto-commit.
+  const confirmedHtml = renderReview(stateFixture({ weekTrades: [confirmed], stragglers: [], openTrades: [], selected: '6' }));
+  assert.doesNotMatch(confirmedHtml, /auto-committed/);
+});
+
+test('an open auto-committed Trade is marked too', () => {
+  const open = tradeFixture({
+    id: 7, symbol: 'BBRI', book: 'IDX', status: 'open', auto_committed: 1,
+    exits: [], final_exit_date: null, realized_r: null, adherence: null, days_held: 2,
+  });
+  const html = renderReview(stateFixture({ weekTrades: [], stragglers: [], openTrades: [open], selected: '7' }));
+  assert.match(html.slice(html.indexOf('<div class="card">')), /auto-committed/);
+});
+
+test('readReview carries auto_committed off the store', withDb((dbPath) => {
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    INSERT INTO trade (id, book, symbol, entry_date, entry_qty, entry_avg_price, status, stop, frozen, auto_committed)
+    VALUES (1,'IDX','BBRI','2026-08-19',100,4200,'open',4120,0,1),
+           (2,'IDX','TLKM','2026-08-19',100,3000,'open',2900,0,0);
+  `);
+  db.close();
+  const open = readReview(dbPath, { asOf: '2026-08-20' }).openTrades;
+  assert.equal(open.find((t) => t.symbol === 'BBRI')!.auto_committed, 1);
+  assert.equal(open.find((t) => t.symbol === 'TLKM')!.auto_committed, 0);
+}));
+
+// ── a broken relay is visible, not silent: the last pull is a stated fact ──
+test('the banner states the last successful relay pull, or that none has happened', withDb((dbPath) => {
+  // A run with no relay configured records a skipped relay pass — not a pull.
+  journal(dbPath, ['run', '--as-of', '2026-08-20']);
+  const none = readReview(dbPath, { asOf: '2026-08-20' }).banner.find((b) => b.kind === 'relay');
+  assert.ok(none, 'the relay pull is a stated fact even when it never happened');
+  assert.equal(none.title, 'Relay');
+  assert.match(none.body, /no pull recorded/);
+
+  // One run pulled; a later one could not reach the relay. The fact is the
+  // successful one, dated and timed in the trader's own zone (WIB).
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    INSERT INTO run (id, started_at, finished_at, as_of_date, status)
+    VALUES (100,'2026-08-19T13:05:00+00:00','2026-08-19T13:06:00+00:00','2026-08-19','ok'),
+           (101,'2026-08-20T13:05:00+00:00','2026-08-20T13:06:00+00:00','2026-08-20','error');
+    INSERT INTO run_pass (run_id, book, name, status, detail)
+    VALUES (100,'RELAY','relay','ran','2 item(s) pulled, 2 archived, 2 declaration event(s) recorded, 0 TC PDF(s) taken in, 0 new fill(s)'),
+           (101,'RELAY','relay','error','relay unreachable');
+  `);
+  db.close();
+  const pulled = readReview(dbPath, { asOf: '2026-08-20' }).banner.find((b) => b.kind === 'relay');
+  assert.ok(pulled);
+  assert.match(pulled.body, /last pull 2026-08-19 20:05 WIB/);
+
+  const html = renderReview(readReview(dbPath, { asOf: '2026-08-20' }));
+  assert.match(html, /<b>Relay<\/b> — last pull 2026-08-19 20:05 WIB/);
+
+  // A pass that pulled and then failed later (a malformed item left at the
+  // relay, an acknowledgement that did not land) is recorded as an error, but
+  // the relay answered: it is still a pull, or one stuck item would freeze the
+  // fact on an old date while the relay is fine.
+  const db2 = new DatabaseSync(dbPath);
+  db2.exec(`
+    INSERT INTO run (id, started_at, finished_at, as_of_date, status)
+    VALUES (102,'2026-08-21T13:05:00+00:00','2026-08-21T13:06:00+00:00','2026-08-21','error');
+    INSERT INTO run_pass (run_id, book, name, status, detail)
+    VALUES (102,'RELAY','relay','error','1 item(s) pulled, 1 archived, 0 declaration event(s) recorded, 0 TC PDF(s) taken in, 0 new fill(s); 1 item(s) malformed, archived and left at the relay: r9 (KeyError())');
+  `);
+  db2.close();
+  const partial = readReview(dbPath, { asOf: '2026-08-21' }).banner.find((b) => b.kind === 'relay');
+  assert.match(partial!.body, /last pull 2026-08-21 20:05 WIB/);
+}));
 
 // ── readReview: scope, week filtering, and derived R over a real store ──
 test('readReview scopes the week and derives R from stored primitives', withDb((dbPath) => {
