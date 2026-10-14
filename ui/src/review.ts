@@ -496,7 +496,7 @@ function readScopeStarts(db: DatabaseSync): Record<string, string> {
 
 // `2026-08-19 20:05 WIB` from an ISO instant. WIB is a fixed UTC+7 with no
 // daylight saving, so the offset is applied by hand rather than through Intl.
-function wib(iso: string): string {
+function wibStamp(iso: string): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return iso;
   const d = new Date(ms + 7 * 3600_000).toISOString();
@@ -568,7 +568,8 @@ function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[
     });
   }
 
-  // Stated facts, never alarms (SPEC §11.4): last run, last IDX intake, last IDX equity.
+  // Stated facts, never alarms (SPEC §11.4): last run, last relay pull, last
+  // US and IDX intake, last IDX equity.
   if (tableExists(db, 'run')) {
     const run = db.prepare('SELECT as_of_date, status, finished_at FROM run ORDER BY id DESC LIMIT 1').get() as
       { as_of_date: string; status: string; finished_at: string | null } | undefined;
@@ -582,20 +583,24 @@ function buildBanner(db: DatabaseSync, closed: ReviewTrade[], open: ReviewTrade[
   }
   // The relay is the one component off the Mac (ADR 0011), and what it carries
   // now commits Trades unseen (ADR 0012), so a relay that stopped answering
-  // would be silent. The fact is the last *successful* pull: an errored pass
-  // reached nothing, and a "skipped —" one (no relay configured) never tried.
-  // Timed as well as dated, in WIB, because the relay is pulled daily.
+  // would be silent. The fact is the last *successful* pull, and the pass detail
+  // says whether one happened: every pass that got items back leads with the
+  // pull summary (relay_intake.IntakeCounts.summary), including one recorded as
+  // an error for something that failed *after* the pull — a malformed item left
+  // at the relay errors every run, and must not freeze this fact while the relay
+  // answers. A pass that never reached the relay, or was skipped because none
+  // is configured, carries no summary. Timed as well as dated, in WIB, because
+  // the relay is pulled daily.
   if (tableExists(db, 'run_pass')) {
     const pull = db
       .prepare(
         'SELECT MAX(r.started_at) AS t FROM run_pass p JOIN run r ON r.id = p.run_id '
-        + "WHERE p.book = 'RELAY' AND p.name = 'relay' AND p.status = 'ran' "
-        + "AND COALESCE(p.detail, '') NOT LIKE 'skipped%'",
+        + "WHERE p.book = 'RELAY' AND p.name = 'relay' AND p.detail GLOB '[0-9]* item(s) pulled, *'",
       )
       .get() as { t: string | null };
     items.push({
       kind: 'relay', severity: 'info', title: 'Relay',
-      body: pull.t ? `last pull ${wib(pull.t)}.` : 'no pull recorded.',
+      body: pull.t ? `last pull ${wibStamp(pull.t)}.` : 'no pull recorded.',
     });
   }
   // Intake means "when did a hand-dropped TC last land" (SPEC §13.2) — a fact

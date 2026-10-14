@@ -273,6 +273,21 @@ test('the banner states the last successful relay pull, or that none has happene
 
   const html = renderReview(readReview(dbPath, { asOf: '2026-08-20' }));
   assert.match(html, /<b>Relay<\/b> — last pull 2026-08-19 20:05 WIB/);
+
+  // A pass that pulled and then failed later (a malformed item left at the
+  // relay, an acknowledgement that did not land) is recorded as an error, but
+  // the relay answered: it is still a pull, or one stuck item would freeze the
+  // fact on an old date while the relay is fine.
+  const db2 = new DatabaseSync(dbPath);
+  db2.exec(`
+    INSERT INTO run (id, started_at, finished_at, as_of_date, status)
+    VALUES (102,'2026-08-21T13:05:00+00:00','2026-08-21T13:06:00+00:00','2026-08-21','error');
+    INSERT INTO run_pass (run_id, book, name, status, detail)
+    VALUES (102,'RELAY','relay','error','1 item(s) pulled, 1 archived, 0 declaration event(s) recorded, 0 TC PDF(s) taken in, 0 new fill(s); 1 item(s) malformed, archived and left at the relay: r9 (KeyError())');
+  `);
+  db2.close();
+  const partial = readReview(dbPath, { asOf: '2026-08-21' }).banner.find((b) => b.kind === 'relay');
+  assert.match(partial!.body, /last pull 2026-08-21 20:05 WIB/);
 }));
 
 // ── readReview: scope, week filtering, and derived R over a real store ──

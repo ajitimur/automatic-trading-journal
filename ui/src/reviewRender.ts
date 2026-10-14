@@ -131,14 +131,13 @@ function closedDetail(t: ReviewTrade): string {
   const chasedPill = t.chased ? `<span class="pill warn">chased ${t.stop_distance_adr?.toFixed(2)} ADR</span>` : '';
   const provPill = t.stop_provenance && t.stop_provenance !== 'recorded'
     ? `<span class="pill ${t.stop === null ? 'bad' : 'mute'}">stop ${esc(t.stop_provenance)}</span>` : '';
-  const autoPill = autoCommittedPill(t);
 
   return `<div class="card">
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">
       <h3 style="font-size:20px;margin:0">${esc(t.symbol)}</h3>
       <span class="pill mute">${esc(t.book)}</span>
       ${t.setup ? `<span class="pill mute">${esc(t.setup.replace(/_/g, ' '))}</span>` : ''}
-      ${chasedPill}${provPill}${autoPill}
+      ${chasedPill}${provPill}${autoCommittedPill(t)}
       ${t.reviewed_at ? '<span class="pill good">reviewed</span>' : ''}
       <span style="margin-left:auto;font-size:19px" class="${cls(t.realized_r)}">${realized}</span>
     </div>
