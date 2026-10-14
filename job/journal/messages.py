@@ -19,6 +19,13 @@ binding:
 A Trade gets at most one message per run: a refusal sent this run stands in for
 its nag.
 
+Each message names its Trade to the relay, which remembers it against the
+Telegram message id, so the trader can answer by replying with just ``4120`` or
+``no sl`` (#55). An entry filled across two days is two Trades (ADR 0001), and a
+declaration binds only to the first; so the second day's nag offers the first
+day's Stop as a one-tap answer, when that Trade has one and was entered at most
+:data:`SPLIT_DAY_TRADING_DAYS` trading days before.
+
 Each message is recorded only once the relay has taken it, with the Telegram
 message id the relay hands back. A send that fails leaves no row, so the next run
 sends it again; the failure is reported to the caller, which puts it on the run
@@ -29,20 +36,32 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from typing import Iterable, Optional, Protocol
 
 from . import stops, trades
 from .binding import Refusal
+from .relay_client import Offer
 
 
 UNDECLARED = "undeclared"
 REFUSAL = "refusal"
 
+# How far back a split-day nag looks for the earlier day's Stop. A Trade entered
+# longer ago than this is a separate entry, not the first half of a split fill.
+SPLIT_DAY_TRADING_DAYS = 3
+
 
 class Sender(Protocol):
     """The outbound half of the relay seam: returns the Telegram message id."""
 
-    def send(self, text: str) -> int:
+    def send(
+        self,
+        text: str,
+        *,
+        trade: Optional[trades.CohortKey] = None,
+        offer: Optional[Offer] = None,
+    ) -> int:
         ...
 
 
@@ -54,6 +73,7 @@ class Message:
     entry_date: str
     text: str
     relay_id: Optional[str] = None
+    offer: Optional[Offer] = None
 
     @property
     def key(self) -> trades.CohortKey:
@@ -91,7 +111,7 @@ def send_due(
     sent = 0
     for i, message in enumerate(due):
         try:
-            message_id = sender.send(message.text)
+            message_id = sender.send(message.text, trade=message.key, offer=message.offer)
         except Exception as exc:  # the network path lies (§13.3) — report, never raise
             conn.commit()
             return SendResult(sent=sent, left=len(due) - i, error=str(exc) or repr(exc))
@@ -130,12 +150,52 @@ def _nag(conn: sqlite3.Connection, p: trades.Proposal, as_of: str) -> Message:
     entry_date = p.entry_date or ""
     left = stops.grace_days_left(conn, p.book, p.symbol, entry_date, as_of)
     price = f" at {_number(p.avg_price)}" if p.avg_price else ""
+    offer = _split_day_offer(conn, p.book, p.symbol, entry_date)
+    question = (
+        f"Same as {p.symbol} {_day_month(offer.entry_date)} ({_number(offer.stop)})?"
+        if offer
+        else "Reply with the stop, e.g. 4120, or no sl"
+    )
     text = (
         f"⏳ {p.book} {p.symbol} is waiting for a stop\n"
         f"{_number(p.quantity)} shares{price}, entry {entry_date}\n"
-        f"{_grace(left)}"
+        f"{_grace(left)}\n"
+        f"{question}"
     )
-    return Message(UNDECLARED, p.book, p.symbol, entry_date, text)
+    return Message(UNDECLARED, p.book, p.symbol, entry_date, text, offer=offer)
+
+
+def _split_day_offer(
+    conn: sqlite3.Connection, book: str, symbol: str, entry_date: str
+) -> Optional[Offer]:
+    """The Stop of this symbol's latest earlier Trade on the Book, if recent enough.
+
+    Counted in trading days like the grace window, falling back to calendar
+    days when no bars are cached (ADR 0009's fallback).
+    """
+    row = conn.execute(
+        "SELECT entry_date, stop FROM trade WHERE book = ? AND symbol = ? "
+        "AND entry_date < ? AND stop IS NOT NULL ORDER BY entry_date DESC LIMIT 1",
+        (book, symbol, entry_date),
+    ).fetchone()
+    if row is None:
+        return None
+    elapsed = stops.trading_days_after(conn, book, symbol, row["entry_date"], entry_date)
+    if elapsed is None:
+        elapsed = (date.fromisoformat(entry_date) - date.fromisoformat(row["entry_date"])).days
+    if elapsed > SPLIT_DAY_TRADING_DAYS:
+        return None
+    return Offer(stop=row["stop"], entry_date=row["entry_date"])
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _day_month(iso: str) -> str:
+    """``13 Oct``, as the relay echoes an entry date, whatever the locale."""
+    d = date.fromisoformat(iso)
+    return f"{d.day} {_MONTHS[d.month - 1]}"
 
 
 def _grace(left: Optional[int]) -> str:

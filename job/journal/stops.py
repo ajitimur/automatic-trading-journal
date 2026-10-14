@@ -143,14 +143,25 @@ def grace_days_left(
     ``None`` when neither is cached: the caller says the window cannot be
     counted rather than guessing it in calendar days.
     """
-    elapsed = _symbol_trading_days_after(conn, book, symbol, entry_date, as_of)
-    if elapsed is None:
-        elapsed = bars.book_trading_days_between(
-            conn, book, after=entry_date, through=as_of
-        )
+    elapsed = trading_days_after(conn, book, symbol, entry_date, as_of)
     if elapsed is None:
         return None
     return max(GRACE_TRADING_DAYS - elapsed, 0)
+
+
+def trading_days_after(
+    conn: sqlite3.Connection, book: str, symbol: str, after: str, through: str
+) -> Optional[int]:
+    """Trading days in ``(after, through]``, off the symbol's bars or else the Book's.
+
+    The symbol's own bars count first, so a suspension is not a trading day. A
+    symbol with none yet falls back to the Book's benchmark calendar. ``None``
+    when neither is cached.
+    """
+    elapsed = _symbol_trading_days_after(conn, book, symbol, after, through)
+    if elapsed is None:
+        elapsed = bars.book_trading_days_between(conn, book, after=after, through=through)
+    return elapsed
 
 
 def _derive_provenance(

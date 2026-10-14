@@ -158,6 +158,12 @@ class RelayIntakeTest(_RunTestCase):
                 ("583201005", "withdrawn", "IDX", "ASII", "2026-10-13", None, None, "2026-10-13T03:01:00Z"),
                 ("583201006", "declared", "US", "AMD", "2026-10-13", 182.5, None, "2026-10-13T18:00:00Z"),
                 ("583201007", "declared", "US", "META", "2026-10-13", 590, "other", "2026-10-13T18:05:00Z"),
+                # A bare reply to a nag, resolved by the relay to the nag's Trade
+                # (#55): dated by when it was said, keyed by the nag's entry date.
+                ("583201009", "declared", "IDX", "ADRO", "2026-10-13", 2650, "base_breakout",
+                 "2026-10-14T01:30:00Z"),
+                # A tap on a split-day nag's Yes: the first day's Stop, for the second.
+                ("583201010", "declared", "IDX", "BBRI", "2026-10-14", 4120, None, "2026-10-15T01:40:00Z"),
             ],
         )
 
@@ -168,7 +174,7 @@ class RelayIntakeTest(_RunTestCase):
         # The typo and its replacement are both on record, oldest said first.
         self.assertEqual([e.stop for e in store.for_key("IDX", "BBRI", "2026-10-13")], [412, 4120])
         self.assertEqual(store.for_key("US", "BBRI", "2026-10-13"), [])
-        self.assertEqual(store.for_key("IDX", "BBRI", "2026-10-14"), [])
+        self.assertEqual(store.for_key("IDX", "BBRI", "2026-10-15"), [])
 
     def test_the_live_declaration_per_key_is_the_newest_and_a_withdrawn_key_has_none(self):
         execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
@@ -181,6 +187,8 @@ class RelayIntakeTest(_RunTestCase):
                 ("IDX", "TLKM", "2026-10-13"): ("declined", None, None),
                 ("US", "AMD", "2026-10-13"): ("declared", 182.5, None),
                 ("US", "META", "2026-10-13"): ("declared", 590, "other"),
+                ("IDX", "ADRO", "2026-10-13"): ("declared", 2650, "base_breakout"),
+                ("IDX", "BBRI", "2026-10-14"): ("declared", 4120, None),
             },
         )
 
@@ -208,10 +216,10 @@ class RelayIntakeTest(_RunTestCase):
             "SELECT book, kind, content FROM raw_document WHERE kind = 'relay-item' ORDER BY id"
         ).fetchall()
         self.assertEqual([json.loads(r["content"]) for r in rows], items)
-        self.assertEqual([r["book"] for r in rows], ["IDX"] * 5 + ["US"] * 2 + ["IDX"])
+        self.assertEqual([r["book"] for r in rows], ["IDX"] * 5 + ["US"] * 2 + ["IDX"] * 3)
 
         files = sorted(os.listdir(os.path.join(self.archive_dir, "relay-item")))
-        self.assertEqual(len(files), 8)
+        self.assertEqual(len(files), 10)
         archived = []
         for name in files:
             with open(os.path.join(self.archive_dir, "relay-item", name), encoding="utf-8") as fh:
@@ -262,11 +270,11 @@ class RelayIntakeTest(_RunTestCase):
         second = execute_run(self.conn, as_of="2026-10-15", relay=relay)
 
         self.assertEqual(self._relay_pass(second).status, "ran")
-        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 9)
         raw = self.conn.execute(
             "SELECT COUNT(*) c FROM raw_document WHERE kind = 'relay-item'"
         ).fetchone()["c"]
-        self.assertEqual(raw, 8)
+        self.assertEqual(raw, 10)
         self.assertEqual(relay.items, [])
 
     def test_the_run_row_states_how_many_items_were_pulled_and_archived(self):
@@ -274,9 +282,9 @@ class RelayIntakeTest(_RunTestCase):
 
         row = self._relay_row(result.run_id)
         self.assertEqual(row["status"], "ran")
-        self.assertIn("8 item(s) pulled", row["detail"])
-        self.assertIn("8 archived", row["detail"])
-        self.assertIn("7 declaration event(s) recorded", row["detail"])
+        self.assertIn("10 item(s) pulled", row["detail"])
+        self.assertIn("10 archived", row["detail"])
+        self.assertIn("9 declaration event(s) recorded", row["detail"])
 
     def test_an_empty_relay_pulls_nothing_and_acknowledges_nothing(self):
         relay = FakeRelay([])
@@ -322,12 +330,12 @@ class RelayIntakeTest(_RunTestCase):
         relay = FakeRelay([*_fixture_items(), other])
         result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
 
-        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 9)
         self.assertEqual(relay.acked, [[*_fixture_ids(), "583201099"]])
         detail = self._relay_row(result.run_id)["detail"]
-        self.assertIn("9 item(s) pulled", detail)
-        self.assertIn("9 archived", detail)
-        self.assertIn("7 declaration event(s) recorded", detail)
+        self.assertIn("11 item(s) pulled", detail)
+        self.assertIn("11 archived", detail)
+        self.assertIn("9 declaration event(s) recorded", detail)
 
     def test_a_malformed_item_of_any_known_kind_is_archived_but_left_at_the_relay(self):
         # The wire contract has drifted: say so, and keep the item where a fixed
@@ -351,10 +359,10 @@ class RelayIntakeTest(_RunTestCase):
         self.assertIn("4 item(s) malformed", row["detail"])
         for relay_id in ("b1", "b2", "b3", "b4"):
             self.assertIn(relay_id, row["detail"])
-        self.assertIn("12 archived", row["detail"])
+        self.assertIn("14 archived", row["detail"])
         self.assertEqual(relay.acked, [_fixture_ids()])
         self.assertEqual([i["id"] for i in relay.items], ["b1", "b2", "b3", "b4"])
-        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 9)
 
     def test_an_item_with_no_id_does_not_hold_back_the_others(self):
         # It can never be acknowledged, so it is reported; the good items still
@@ -367,7 +375,7 @@ class RelayIntakeTest(_RunTestCase):
         self.assertEqual(row["status"], "error")
         self.assertIn("1 item(s) without an id", row["detail"])
         self.assertEqual(relay.acked, [_fixture_ids()])
-        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 9)
 
     def test_each_run_pushes_the_symbols_the_journal_knows_on_the_us_book(self):
         fills.insert_fills(self.conn, [
@@ -394,9 +402,9 @@ class RelayIntakeTest(_RunTestCase):
         row = self._relay_row(result.run_id)
         self.assertEqual(row["status"], "error")
         self.assertIn("push refused", row["detail"])
-        self.assertIn("7 declaration event(s) recorded", row["detail"])
+        self.assertIn("9 declaration event(s) recorded", row["detail"])
         self.assertEqual(relay.acked, [_fixture_ids()])
-        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 7)
+        self.assertEqual(len(StopDeclarationStore(self.conn).all()), 9)
 
 
 class ForwardedTcTest(_RunTestCase):
@@ -517,7 +525,7 @@ class ForwardedTcTest(_RunTestCase):
         row = self._relay_row(first.run_id)
         self.assertEqual(row["status"], "error")
         self.assertIn(f"{FIXTURE_TC_ID} could not be fetched", row["detail"])
-        self.assertEqual(relay.acked, [_fixture_ids()[:-1]])
+        self.assertEqual(relay.acked, [[i for i in _fixture_ids() if i != FIXTURE_TC_ID]])
         self.assertEqual(self._fill_count(), 0)
 
         relay.documents = {FIXTURE_TC_ID: _tc_bytes(TC_FIXTURE)}

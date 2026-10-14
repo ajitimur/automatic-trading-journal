@@ -12,7 +12,10 @@ The relay's Mac-facing contract, as pinned by
 * ``PUT /known-us-symbols`` takes ``{"symbols": [...]}`` and replaces the list
   the relay reads a 4-letter symbol as US by (#51).
 * ``POST /send`` takes ``{"text": ...}``, messages the trader, and answers
-  ``{"message_id": n}`` (#53).
+  ``{"message_id": n}`` (#53). A message about one Trade adds ``"trade":
+  {book, symbol, entry_date}``, which the relay remembers against the message
+  id so a bare reply to it declares for that Trade; ``"offer": {stop,
+  entry_date}`` adds a one-tap button declaring that Stop (#55).
 * All five need ``Authorization: Bearer <MAC_SECRET>``.
 
 The relay sits on the open internet, behind the same ISP whose DNS interception
@@ -30,7 +33,8 @@ import base64
 import json
 import os
 import urllib.parse
-from typing import Callable, Mapping, Optional, Protocol, Sequence
+from dataclasses import dataclass
+from typing import Callable, Mapping, Optional, Protocol, Sequence, Tuple
 
 from . import secrets
 from .flex_client import EmptyResponseError, HttpResponse, Resolver, check_landed
@@ -39,6 +43,14 @@ from .flex_client import EmptyResponseError, HttpResponse, Resolver, check_lande
 # not a secret, carried in the launchd plist like the Flex query id. Unset means
 # no relay is configured, and the run says it skipped the pass.
 URL_ENV = "JOURNAL_RELAY_URL"
+
+
+@dataclass(frozen=True)
+class Offer:
+    """A Stop a nag offers as its one-tap answer: the earlier Trade's, entered then."""
+
+    stop: float
+    entry_date: str
 
 
 class RelayError(Exception):
@@ -126,16 +138,30 @@ class RelayClient:
                 f"relay document {item_id} is not one: {response.text[:200]!r}"
             ) from exc
 
-    def send(self, text: str) -> int:
+    def send(
+        self,
+        text: str,
+        *,
+        trade: Optional[Tuple[str, str, str]] = None,
+        offer: Optional[Offer] = None,
+    ) -> int:
         """Message the trader through the relay and return Telegram's message id.
 
-        The relay holds the bot token, so the Mac never does (#53). An empty body
-        is the ISP's interception, not a delivery, so it raises like a pull does.
+        The relay holds the bot token, so the Mac never does (#53). ``trade``, a
+        ``(book, symbol, entry_date)``, makes the message one a bare reply can
+        answer; ``offer`` adds the one-tap button (#55). An empty body is the
+        ISP's interception, not a delivery, so it raises like a pull does.
         """
+        payload: dict = {"text": text}
+        if trade is not None:
+            book, symbol, entry_date = trade
+            payload["trade"] = {"book": book, "symbol": symbol, "entry_date": entry_date}
+        if offer is not None:
+            payload["offer"] = {"stop": offer.stop, "entry_date": offer.entry_date}
         response = self._send(
             "POST",
             "/send",
-            body=json.dumps({"text": text}).encode("utf-8"),
+            body=json.dumps(payload).encode("utf-8"),
             content_type="application/json",
         )
         payload = self._json(

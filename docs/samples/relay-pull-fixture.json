@@ -97,6 +97,39 @@
         "file_name": "TC_13102026.pdf",
         "file_size": 48213
       }
+    },
+    {
+      "id": "583201009",
+      "telegram_at": "2026-10-14T01:30:00Z",
+      "text": "2650 bb",
+      "parse": {
+        "kind": "declaration",
+        "book": "IDX",
+        "symbol": "ADRO",
+        "stop": 2650,
+        "setup": "base_breakout",
+        "entry_date": "2026-10-13"
+      },
+      "answers": {
+        "nag": 7001,
+        "via": "reply"
+      }
+    },
+    {
+      "id": "583201010",
+      "telegram_at": "2026-10-15T01:40:00Z",
+      "text": "Yes",
+      "parse": {
+        "kind": "declaration",
+        "book": "IDX",
+        "symbol": "BBRI",
+        "stop": 4120,
+        "entry_date": "2026-10-14"
+      },
+      "answers": {
+        "nag": 7002,
+        "via": "button"
+      }
     }
   ]
 }

@@ -14,15 +14,26 @@ export interface Env {
 
 function telegramApi(token: string): Telegram {
   return {
-    async sendMessage(chatId, text) {
+    async sendMessage(chatId, text, buttons) {
+      const reply_markup = buttons
+        ? { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] }
+        : undefined;
       const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }),
+        body: JSON.stringify({ chat_id: chatId, text, reply_markup }),
       });
       if (!res.ok) throw new Error(`Telegram sendMessage failed: ${res.status}`);
       const body = (await res.json()) as { result: { message_id: number } };
       return body.result.message_id;
+    },
+    async answerCallback(callbackId, text) {
+      const res = await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ callback_query_id: callbackId, text }),
+      });
+      if (!res.ok) throw new Error(`Telegram answerCallbackQuery failed: ${res.status}`);
     },
     // getFile names a path valid for an hour; the file itself is a plain GET.
     async downloadFile(fileId) {

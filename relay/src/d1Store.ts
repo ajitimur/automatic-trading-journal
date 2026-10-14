@@ -2,7 +2,7 @@
 // handful of D1 calls it makes rather than the Workers type package, so the
 // same code runs under `node --test` over node:sqlite.
 
-import { keyOf, type RecentDeclaration, type RelayStore, type StoredItem } from './relay.ts';
+import { keyOf, type RecentDeclaration, type RelayStore, type SentNag, type StoredItem } from './relay.ts';
 
 export interface D1Statement {
   bind(...values: unknown[]): D1Statement;
@@ -76,6 +76,23 @@ export function d1Store(db: D1Database): RelayStore {
       await db
         .prepare('DELETE FROM pdf_days WHERE day IN (SELECT value FROM json_each(?))')
         .bind(JSON.stringify(days))
+        .run();
+    },
+    async nags() {
+      const { results } = await db.prepare('SELECT nag FROM nags').all<{ nag: string }>();
+      return results.map((row): SentNag => JSON.parse(row.nag));
+    },
+    async putNag(nag) {
+      await db
+        .prepare('INSERT OR REPLACE INTO nags (message_id, nag) VALUES (?, ?)')
+        .bind(nag.message_id, JSON.stringify(nag))
+        .run();
+    },
+    async deleteNags(messageIds) {
+      if (messageIds.length === 0) return;
+      await db
+        .prepare('DELETE FROM nags WHERE message_id IN (SELECT value FROM json_each(?))')
+        .bind(JSON.stringify(messageIds))
         .run();
     },
   };

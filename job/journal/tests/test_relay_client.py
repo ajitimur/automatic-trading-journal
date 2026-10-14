@@ -183,6 +183,21 @@ class SendTest(unittest.TestCase):
         self.assertEqual(call["headers"]["Content-Type"], "application/json")
         self.assertEqual(json.loads(call["body"]), {"text": "IDX BBRI: no stop declared"})
 
+    def test_send_names_the_trade_and_offer_so_a_reply_can_find_it(self):
+        # The relay remembers the nag by its message id against this key (#55).
+        transport = FakeTransport('{"message_id": 812}')
+        _client(transport).send(
+            "⏳ IDX BBRI is waiting for a stop",
+            trade=("IDX", "BBRI", "2026-10-14"),
+            offer=relay_client.Offer(stop=4120.0, entry_date="2026-10-13"),
+        )
+
+        self.assertEqual(json.loads(transport.calls[0]["body"]), {
+            "text": "⏳ IDX BBRI is waiting for a stop",
+            "trade": {"book": "IDX", "symbol": "BBRI", "entry_date": "2026-10-14"},
+            "offer": {"stop": 4120.0, "entry_date": "2026-10-13"},
+        })
+
     def test_send_connects_only_to_the_doh_answer(self):
         resolver = FakeResolver()
         transport = FakeTransport('{"message_id": 1}')

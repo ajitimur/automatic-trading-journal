@@ -9,11 +9,21 @@
 // store, clock, configuration — so the Worker runtime is a thin adapter
 // (worker.ts) and the tests run under `node --test` with fakes.
 
+// One inline button under a message: its label, and the callback data a tap
+// sends back.
+export interface Button {
+  text: string;
+  data: string;
+}
+
 // The Bot API calls the relay makes. The bot token stays behind this, on the
 // relay: the Mac sends and fetches a forwarded document through the relay.
 export interface Telegram {
-  // Resolves to the sent message's Telegram message_id.
-  sendMessage(chatId: number, text: string): Promise<number>;
+  // Resolves to the sent message's Telegram message_id. `buttons` go in one
+  // row under the message.
+  sendMessage(chatId: number, text: string, buttons?: Button[]): Promise<number>;
+  // Stops the tapped button's spinner, showing `text` as a toast when given.
+  answerCallback(callbackId: string, text?: string): Promise<void>;
   downloadFile(fileId: string): Promise<Uint8Array>;
 }
 
@@ -91,6 +101,38 @@ export interface TcDocument {
 
 export type Declared = Declaration | Decline;
 
+// The Trade a nag is about, as a declaration binds to it.
+export interface TradeKey {
+  book: Book;
+  symbol: string;
+  entry_date: string;
+}
+
+// A Stop a split-day nag offers as a one-tap answer (#55): the stop of the
+// earlier day's Trade, entered on `entry_date`.
+export interface Offer {
+  stop: number;
+  entry_date: string;
+}
+
+// A nag the Mac sent through POST /send, kept so that a reply to it, or a tap
+// on its button, resolves to its Trade. Kept for RECENT_MS, like a declaration.
+export interface SentNag {
+  message_id: number;
+  trade: TradeKey;
+  offer?: Offer;
+  sent_at: string;
+  // The update id of the Yes tap that took the offer, so a second tap is not a
+  // second declaration.
+  taken_by?: string;
+}
+
+// The nag a pulled declaration answered, and how: a bare reply or a tap on Yes.
+export interface Answers {
+  nag: number;
+  via: 'reply' | 'button';
+}
+
 type Parsed = Declared | { kind: 'undo' } | { kind: 'error'; reason: string };
 
 // The bits of a Telegram Update the relay reads.
@@ -103,6 +145,14 @@ interface TelegramUpdate {
     text?: string;
     caption?: string;
     document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+    reply_to_message?: { message_id: number };
+  };
+  // A tap on an inline button.
+  callback_query?: {
+    id: string;
+    from: { id: number };
+    message?: { message_id: number };
+    data?: string;
   };
 }
 
@@ -116,6 +166,8 @@ export interface PullItem {
   // The message text, or a document's caption ('' when it has none).
   text: string;
   parse: Declared | Undo | TcDocument;
+  // Present when the declaration answered a nag rather than naming its symbol.
+  answers?: Answers;
 }
 
 export interface StoredItem {
@@ -156,6 +208,10 @@ export interface RelayStore {
   pdfDays(): Promise<string[]>;
   putPdfDay(day: string): Promise<void>;
   deletePdfDays(days: string[]): Promise<void>;
+  // `putNag` overwrites the nag with the same message id.
+  nags(): Promise<SentNag[]>;
+  putNag(nag: SentNag): Promise<void>;
+  deleteNags(messageIds: number[]): Promise<void>;
 }
 
 // The key a declaration binds on, and replaces on.
@@ -178,6 +234,14 @@ const RECENT_MS = 7 * DAY_MS;
 
 const USAGE = 'Expected: [idx|us] SYMBOL STOP [bb|htf|oth], SYMBOL no sl, or /undo. E.g. BBRI 4120 htf';
 
+// The split-day nag's one-tap answer and its way out (#55).
+const YES = 'yes';
+const OTHER = 'other';
+const OFFER_BUTTONS: Button[] = [
+  { text: 'Yes', data: YES },
+  { text: 'Other', data: OTHER },
+];
+
 export function createRelay(deps: RelayDeps): Relay {
   const { telegram, store, clock, config } = deps;
 
@@ -186,6 +250,11 @@ export function createRelay(deps: RelayDeps): Relay {
   async function onWebhook(request: Request): Promise<Response> {
     const ok = new Response(null, { status: 200 });
     const update = (await readJson(request)) as TelegramUpdate | null;
+    const callback = update?.callback_query;
+    if (update && callback) {
+      if (callback.from?.id === config.userId) await onTap(String(update.update_id), callback);
+      return ok;
+    }
     const message = update?.message;
     if (!update || !message || message.from?.id !== config.userId) return ok;
     const sentAt = new Date(message.date * 1000);
@@ -209,9 +278,23 @@ export function createRelay(deps: RelayDeps): Relay {
     }
     if (typeof message.text !== 'string') return ok;
     const text = message.text;
-    const hold = holdWithText(text);
+    const repliedTo = message.reply_to_message?.message_id;
+    const nag = repliedTo === undefined ? undefined : await findNag(repliedTo);
+    // A bare stop takes its Trade from the nag it answers (#55); anywhere else
+    // it names no symbol, and is the grammar error.
+    const bare = isBare(text);
+    const answers: Answers | undefined = bare && nag ? { nag: nag.message_id, via: 'reply' } : undefined;
+    const hold = (parse: PullItem['parse']) =>
+      store.put({
+        item: { id, telegram_at: telegramAt, text, parse, ...(answers ? { answers } : {}) },
+        stored_at: clock().toISOString(),
+      });
 
-    const parse = parseMessage(text, sentAt, new Set(await store.knownUsSymbols()));
+    const parse: Parsed = !bare
+      ? parseMessage(text, sentAt, new Set(await store.knownUsSymbols()))
+      : nag
+        ? parseStop(text.trim().split(/\s+/), nag.trade)
+        : { kind: 'error', reason: USAGE };
     let reply: string;
     if (parse.kind === 'error') {
       reply = `✗ ${parse.reason}`;
@@ -225,12 +308,57 @@ export function createRelay(deps: RelayDeps): Relay {
         reply = `↩ Withdrew ${describe(withdrawn.parse)}`;
       }
     } else {
-      const replaced = await remember({ id, telegram_at: telegramAt, parse });
-      await hold(parse);
-      reply = `✓ ${describe(parse)}${replaced ? ` (replaced ${value(replaced)} → ${value(parse)})` : ''}`;
+      reply = await declare({ id, telegram_at: telegramAt, parse }, hold);
     }
     await telegram.sendMessage(message.chat.id, reply);
     return ok;
+  }
+
+  // Records a declaration as the latest for its key, holds it for the Mac, and
+  // returns the reply echoing how it was read.
+  async function declare(declared: RecentDeclaration, hold: (parse: Declared) => Promise<void>): Promise<string> {
+    const replaced = await remember(declared);
+    await hold(declared.parse);
+    const { parse } = declared;
+    return `✓ ${describe(parse)}${replaced ? ` (replaced ${value(replaced)} → ${value(parse)})` : ''}`;
+  }
+
+  // A tap on a split-day nag's button (#55). Yes declares the offered Stop for
+  // the nag's Trade, once however often it is tapped; Other points at the
+  // reply. A tap carries no send time, so the relay's clock dates it.
+  async function onTap(id: string, callback: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+    const messageId = callback.message?.message_id;
+    const nag = messageId === undefined ? undefined : await findNag(messageId);
+    if (!nag) {
+      await telegram.answerCallback(callback.id, 'This question has expired: send SYMBOL STOP instead');
+      return;
+    }
+    if (callback.data !== YES || !nag.offer) {
+      await telegram.answerCallback(callback.id, 'Reply to this message with the stop, e.g. 4120, or no sl');
+      return;
+    }
+    if (nag.taken_by !== undefined && nag.taken_by !== id) {
+      await telegram.answerCallback(callback.id, 'Already answered');
+      return;
+    }
+    const telegramAt = isoSeconds(clock());
+    const parse: Declaration = { kind: 'declaration', ...nag.trade, stop: nag.offer.stop };
+    const answers: Answers = { nag: nag.message_id, via: 'button' };
+    await store.putNag({ ...nag, taken_by: id });
+    const reply = await declare({ id, telegram_at: telegramAt, parse }, (held) =>
+      store.put({
+        item: { id, telegram_at: telegramAt, text: 'Yes', parse: held, answers },
+        stored_at: clock().toISOString(),
+      }),
+    );
+    await telegram.answerCallback(callback.id);
+    await telegram.sendMessage(config.userId, reply);
+  }
+
+  // The nag sent as Telegram message `messageId`, if sent within RECENT_MS.
+  async function findNag(messageId: number): Promise<SentNag | undefined> {
+    const cutoff = clock().getTime() - RECENT_MS;
+    return (await store.nags()).find((n) => n.message_id === messageId && Date.parse(n.sent_at) >= cutoff);
   }
 
   // The declarations said within RECENT_MS of the clock.
@@ -280,6 +408,8 @@ export function createRelay(deps: RelayDeps): Relay {
     const cutoff = clock().getTime() - RECENT_MS;
     const stale = (await store.recent()).filter((r) => Date.parse(r.telegram_at) < cutoff);
     if (stale.length > 0) await store.deleteRecent(stale.map((r) => r.id));
+    const staleNags = (await store.nags()).filter((n) => Date.parse(n.sent_at) < cutoff);
+    if (staleNags.length > 0) await store.deleteNags(staleNags.map((n) => n.message_id));
   }
 
   // A PDF day goes once it is more than RECENT_MS old in Jakarta days, long
@@ -336,11 +466,22 @@ export function createRelay(deps: RelayDeps): Relay {
   // here, so the bot token stays on the Worker. A private chat's id is the
   // user's id, so the only recipient is the trader. A Telegram failure throws,
   // and the Mac reads the 5xx as a failed send.
+  //
+  // A message about one Trade names it as `trade`, and the relay remembers it
+  // as a nag, so a bare reply to it resolves to that Trade (#55). An `offer`
+  // adds the one-tap Yes / Other buttons.
   async function onSend(request: Request): Promise<Response> {
     const body = await readJson(request);
     const text = body?.text;
-    if (typeof text !== 'string' || text === '') return new Response(null, { status: 400 });
-    const messageId = await telegram.sendMessage(config.userId, text);
+    const bad = new Response(null, { status: 400 });
+    if (typeof text !== 'string' || text === '') return bad;
+    const trade = body?.trade === undefined ? undefined : tradeKeyOf(body.trade);
+    const offer = body?.offer === undefined ? undefined : offerOf(body.offer);
+    if (trade === null || offer === null || (offer && !trade)) return bad;
+    const messageId = await telegram.sendMessage(config.userId, text, offer ? OFFER_BUTTONS : undefined);
+    if (trade) {
+      await store.putNag({ message_id: messageId, trade, ...(offer ? { offer } : {}), sent_at: clock().toISOString() });
+    }
     return Response.json({ message_id: messageId });
   }
 
@@ -384,6 +525,29 @@ async function readJson(request: Request): Promise<Record<string, unknown> | nul
   }
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// A Trade key from the Mac's /send body, or null when it is not one.
+function tradeKeyOf(raw: unknown): TradeKey | null {
+  const t = raw as Partial<Record<keyof TradeKey, unknown>> | null;
+  if (typeof t !== 'object' || t === null) return null;
+  const { book, symbol, entry_date } = t;
+  if (book !== 'IDX' && book !== 'US') return null;
+  if (typeof symbol !== 'string' || symbol === '') return null;
+  if (typeof entry_date !== 'string' || !ISO_DATE.test(entry_date)) return null;
+  return { book, symbol, entry_date };
+}
+
+// An offered Stop from the Mac's /send body, or null when it is not one.
+function offerOf(raw: unknown): Offer | null {
+  const o = raw as Partial<Record<keyof Offer, unknown>> | null;
+  if (typeof o !== 'object' || o === null) return null;
+  const { stop, entry_date } = o;
+  if (typeof stop !== 'number' || !(stop > 0) || !Number.isFinite(stop)) return null;
+  if (typeof entry_date !== 'string' || !ISO_DATE.test(entry_date)) return null;
+  return { stop, entry_date };
+}
+
 // Compares without an early exit on the first differing character, so the
 // response time says nothing about how much of a guess was right.
 function secretMatches(given: string | null, expected: string): boolean {
@@ -409,8 +573,19 @@ function parseMessage(text: string, sentAt: Date, knownUs: Set<string>): Parsed 
   const symbol = rawSymbol.toUpperCase();
   if (!/^[A-Z][A-Z0-9.]*$/.test(symbol) || rest.length === 0) return { kind: 'error', reason: USAGE };
   const book: Book = explicit ?? (/^[A-Z]{4}$/.test(symbol) && !knownUs.has(symbol) ? 'IDX' : 'US');
-  const entry_date = dateIn(sentAt, EXCHANGE_TZ[book]);
+  return parseStop(rest, { book, symbol, entry_date: dateIn(sentAt, EXCHANGE_TZ[book]) });
+}
 
+// A bare stop or decline, `STOP [SETUP]` or `no sl [SETUP]`, with no symbol:
+// how a reply to a nag reads (#55).
+function isBare(text: string): boolean {
+  const [first = '', second = ''] = text.trim().toLowerCase().split(/\s+/);
+  return /^\d/.test(first) || (first === 'no' && second === 'sl');
+}
+
+// `STOP [SETUP]` or `no sl [SETUP]`, the words after the symbol, for `trade`.
+function parseStop(rest: string[], trade: TradeKey): Parsed {
+  const { book, symbol, entry_date } = trade;
   const declined = rest[0]!.toLowerCase() === 'no';
   if (declined && rest[1]?.toLowerCase() !== 'sl') return { kind: 'error', reason: USAGE };
   const setupWords = rest.slice(declined ? 2 : 1);

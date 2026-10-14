@@ -15,8 +15,11 @@ import {
   mac,
   pull,
   pushKnownUs,
+  replyTo,
   say,
   sendFixtureMessages,
+  sendNag,
+  tap,
   TRADER,
   update,
   webhook,
@@ -133,4 +136,25 @@ test('over D1, a forwarded PDF is held and fetched, marks its Jakarta day once, 
   h.setNow('2026-10-20T17:00:00Z'); // 00:00 WIB, 21 Oct
   await h.relay.scheduled();
   assert.equal(await h.relay.pdfArrivedOn('2026-10-13'), false);
+});
+
+test('over D1, a nag is remembered: a reply and a tap resolve to its Trade, and it goes after 7 days', async () => {
+  const h = d1Harness('2026-10-14T11:00:00Z');
+  h.setNextMessageId(9601);
+  await sendNag(h, { book: 'IDX', symbol: 'ADRO', entry_date: '2026-10-13' });
+  await sendNag(h, { book: 'IDX', symbol: 'BBRI', entry_date: '2026-10-14' }, { stop: 4120, entry_date: '2026-10-13' });
+  assert.equal(await replyTo(h, 9601, '2650', '2026-10-14T11:01:00Z', 9603), '✓ IDX ADRO SL 2,650, entry 13 Oct');
+  await tap(h, 9602, 'yes', 9604);
+  await tap(h, 9602, 'yes', 9605);
+  assert.deepEqual(
+    (await pull(h)).items.map((i) => [i.id, i.parse.kind === 'declaration' && i.parse.stop, i.answers?.via]),
+    [
+      ['9603', 2650, 'reply'],
+      ['9604', 4120, 'button'],
+    ],
+  );
+
+  h.setNow('2026-10-21T11:00:01Z');
+  await h.relay.scheduled();
+  assert.deepEqual(await h.store.nags(), []);
 });
