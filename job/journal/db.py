@@ -16,7 +16,7 @@ import os
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 SCHEMA = """
 -- Scope Start per book (ADR 0008): the date from which this Book's Trades count.
@@ -417,6 +417,31 @@ CREATE TABLE IF NOT EXISTS stop_declaration_binding (
     trade_id INTEGER NOT NULL REFERENCES trade(id),
     bound_at TEXT NOT NULL            -- when the run bound it
 );
+
+-- What the journal said back to the trader through the relay (#53). One row per
+-- message that was sent; a failed send leaves no row, so the next run retries
+-- it. `undeclared` is the nag for a new-trade with no bound declaration, sent at
+-- most once per Trade per run day (`sent_on`, the run's as-of date). `refusal`
+-- answers a declaration whose stop sat at or above the entry average, once per
+-- declaration (`relay_id`). `(book, symbol, entry_date)` and
+-- `telegram_message_id` are what a reply to the message finds its Trade by.
+CREATE TABLE IF NOT EXISTS outbound_message (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id              INTEGER NOT NULL REFERENCES run(id),
+    kind                TEXT NOT NULL,    -- 'undeclared' | 'refusal'
+    book                TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    entry_date          TEXT NOT NULL,
+    relay_id            TEXT REFERENCES stop_declaration_event(relay_id),
+    sent_on             TEXT NOT NULL,    -- the run's as-of date
+    sent_at             TEXT NOT NULL,    -- UTC ISO, when the relay took it
+    text                TEXT NOT NULL,
+    telegram_message_id INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS outbound_message_undeclared_once_a_day
+    ON outbound_message (book, symbol, entry_date, sent_on) WHERE kind = 'undeclared';
+CREATE UNIQUE INDEX IF NOT EXISTS outbound_message_refusal_once
+    ON outbound_message (relay_id) WHERE kind = 'refusal';
 
 -- The risk/exposure denominator, and nothing more (SPEC §9). Mark-to-market
 -- NAV, not deposited capital; one job, not the book's equity curve. Identity is

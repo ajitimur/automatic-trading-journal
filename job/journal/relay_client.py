@@ -1,4 +1,4 @@
-"""Pull and acknowledge relay items over the wire (ADR 0011, #49).
+"""Pull and acknowledge relay items, and message the trader, over the wire (ADR 0011).
 
 The relay's Mac-facing contract, as pinned by
 ``docs/samples/relay-pull-fixture.json``:
@@ -7,7 +7,9 @@ The relay's Mac-facing contract, as pinned by
   order, each ``{id, telegram_at, text, parse}``.
 * ``POST /ack`` takes ``{"ids": [...]}``, deletes those items, answers 204, and
   is idempotent.
-* Both need ``Authorization: Bearer <MAC_SECRET>``.
+* ``POST /send`` takes ``{"text": ...}``, messages the trader, and answers
+  ``{"message_id": n}`` (#53).
+* All three need ``Authorization: Bearer <MAC_SECRET>``.
 
 The relay sits on the open internet, behind the same ISP whose DNS interception
 the Flex client was built against, so it takes the same path: each call resolves
@@ -98,6 +100,32 @@ class RelayClient:
             body=json.dumps({"ids": list(ids)}).encode("utf-8"),
             content_type="application/json",
         )
+
+    def send(self, text: str) -> int:
+        """Message the trader through the relay and return Telegram's message id.
+
+        The relay holds the bot token, so the Mac never does (#53). An empty body
+        is the ISP's interception, not a delivery, so it raises like a pull does.
+        """
+        response = self._send(
+            "POST",
+            "/send",
+            body=json.dumps({"text": text}).encode("utf-8"),
+            content_type="application/json",
+        )
+        if not response.text.strip():
+            raise EmptyResponseError(
+                f"empty response body from {self._host()} — a sent message "
+                f"answers with its id, not with nothing (fix the network)"
+            )
+        try:
+            payload = json.loads(response.text)
+        except ValueError as exc:
+            raise RelayError(f"relay send is not JSON: {response.text[:200]!r}") from exc
+        message_id = payload.get("message_id") if isinstance(payload, dict) else None
+        if isinstance(message_id, bool) or not isinstance(message_id, int):
+            raise RelayError(f"relay send has no message id: {response.text[:200]!r}")
+        return message_id
 
     def _send(
         self,

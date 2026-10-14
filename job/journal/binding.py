@@ -34,10 +34,26 @@ from .declarations import StopDeclarationBindingStore, StopDeclarationStore
 
 
 @dataclass(frozen=True)
+class Refusal:
+    """A live declaration that did not bind because its stop would invert R."""
+
+    relay_id: str
+    book: str
+    symbol: str
+    entry_date: str
+    stop: float
+    entry_avg: float
+
+
+@dataclass(frozen=True)
 class BindResult:
     bound: int       # declarations that bound to a Trade
     committed: int   # Trades committed by those bindings
-    refused: int     # declarations whose stop sat at or above entry
+    refusals: tuple[Refusal, ...] = ()  # declarations whose stop sat at or above entry
+
+    @property
+    def refused(self) -> int:
+        return len(self.refusals)
 
     def summary(self) -> str:
         return (
@@ -64,7 +80,7 @@ def bind_and_commit(conn: sqlite3.Connection, *, now: str) -> BindResult:
     stops_by_trade: dict[trades.CohortKey, float] = {}
     stop_set_at: dict[trades.CohortKey, str] = {}
     to_bind: dict[trades.CohortKey, str] = {}
-    refused = 0
+    refusals: list[Refusal] = []
     for key, decl in live.items():
         proposal = new_trades.get(key)
         if proposal is None:
@@ -72,14 +88,18 @@ def bind_and_commit(conn: sqlite3.Connection, *, now: str) -> BindResult:
         if proposal.avg_price and decl.stop >= proposal.avg_price:
             # An inverted R never reaches the store; the declaration stays unbound
             # and a corrected one binds on a later run (ADR 0012).
-            refused += 1
+            refusals.append(Refusal(
+                relay_id=decl.relay_id, book=decl.book, symbol=decl.symbol,
+                entry_date=decl.entry_date, stop=decl.stop,
+                entry_avg=proposal.avg_price,
+            ))
             continue
         stops_by_trade[key] = decl.stop
         stop_set_at[key] = decl.telegram_at
         to_bind[key] = decl.relay_id
 
     if not stops_by_trade:
-        return BindResult(bound=0, committed=0, refused=refused)
+        return BindResult(bound=0, committed=0, refusals=tuple(refusals))
 
     result = trades.confirm(
         conn,
@@ -98,4 +118,6 @@ def bind_and_commit(conn: sqlite3.Connection, *, now: str) -> BindResult:
         if trade_id is not None and bindings.record(relay_id, trade_id, now):
             bound += 1
     conn.commit()
-    return BindResult(bound=bound, committed=result.new_trades, refused=refused)
+    return BindResult(
+        bound=bound, committed=result.new_trades, refusals=tuple(refusals)
+    )
