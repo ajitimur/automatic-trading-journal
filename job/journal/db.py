@@ -428,7 +428,7 @@ CREATE TABLE IF NOT EXISTS stop_declaration_binding (
 -- A Stop Declaration that lapsed (#54): it matched no proposal and no Trade
 -- within three trading days of its entry date, so it will never bind, even if
 -- the Fills for its key arrive late. Counted off the symbol's cached bars, else
--- the Book's benchmark, else calendar days. Keyed on `relay_id`, so a lapse is
+-- the Book's benchmark, else calendar days (#54). Keyed on `relay_id`, so a lapse is
 -- recorded once; a fresh declaration for the same key is a new event, not this one.
 CREATE TABLE IF NOT EXISTS stop_declaration_lapse (
     relay_id  TEXT PRIMARY KEY REFERENCES stop_declaration_event(relay_id),

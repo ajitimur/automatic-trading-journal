@@ -142,7 +142,7 @@ def _refusal(r: Refusal) -> Message:
     if r.reason == FROZEN:
         text = (
             f"✗ {r.book} {r.symbol} entry {r.entry_date} is frozen, so {said} was "
-            "not applied. A frozen Trade's stop and setup are locked."
+            "not applied. A frozen Trade's stop and setup no longer change."
         )
     elif r.reason == STOP_HELD:
         text = (

@@ -226,7 +226,48 @@ class DeclarationEndingsTest(unittest.TestCase):
         self.assertEqual(trade["stop"], 4120)
         self.assertEqual(trade["stop_declined"], 0)
 
-    # -- refused: the Stop is immutable, and a frozen Trade is locked --------
+    def test_a_no_sl_declines_a_committed_stopless_trade(self):
+        self._commit_stopless("BBRI", 4200, "2026-10-13T09:20:00+07:00")
+        relay = FakeRelay([_decline("1", "IDX", "BBRI", "2026-10-13", "2026-10-13T02:15:00Z")])
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        trade = self._trade("BBRI")
+        self.assertEqual((trade["stop"], trade["stop_declined"]), (None, 1))
+        self.assertEqual(relay.sent, [])
+
+    def test_a_run_killed_after_setting_a_stop_is_not_refused_next_run(self):
+        # BBRI is committed stop-less; TLKM is a new-trade, and the process dies
+        # during its auto-commit, later in the same pass. Whatever survived, the
+        # BBRI Stop must not come back on the next run as a "Stop already held"
+        # refusal of its own declaration.
+        self._commit_stopless("BBRI", 4200, "2026-10-13T09:20:00+07:00")
+        self._fills(_buy("t1", "TLKM", 1000, 3000, "2026-10-13T09:40:00+07:00"))
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4120, "2026-10-13", "2026-10-13T02:15:00Z"),
+            _declaration("2", "IDX", "TLKM", 2900, "2026-10-13", "2026-10-13T02:16:00Z"),
+        ])
+        real_confirm = trades.confirm
+
+        def killed(*args, **kwargs):
+            raise SystemExit("killed")  # not an Exception: no pass catches it
+
+        trades.confirm = killed
+        try:
+            with self.assertRaises(SystemExit):
+                execute_run(self.conn, as_of="2026-10-14", relay=relay)
+        finally:
+            trades.confirm = real_confirm
+        # The process is gone: nothing uncommitted survives.
+        db_path = self.conn.execute("PRAGMA database_list").fetchone()["file"]
+        self.conn.close()
+        self.conn = db.connect(db_path)
+
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+        self.assertEqual(self._trade("BBRI")["stop"], 4120)
+        self.assertFalse([t for t in relay.sent if "already has" in t])
+        self.assertEqual(self._trade("TLKM")["stop"], 2900)
+
+    # -- refused: the Stop is immutable, and a frozen Trade is frozen --------
 
     def test_a_declaration_for_a_trade_that_has_a_stop_is_refused_naming_it(self):
         self._fills(_buy("b1", "BBRI", 1000, 4200, "2026-10-13T09:20:00+07:00"))

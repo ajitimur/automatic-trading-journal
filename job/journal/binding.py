@@ -26,7 +26,8 @@ A live declaration that meets no ``new-trade`` ends one of three ways (#54):
   stop path, dated by the declaration, so provenance derives from when it was
   said. A ``no sl`` declines it.
 - **A committed Trade that has a Stop, or is frozen,** is left alone and the
-  declaration is refused: the Stop is immutable, and freeze locks the Trade.
+  declaration is refused: the Stop is immutable, and a frozen Trade's
+  hand-entered fields no longer change.
   A refused declaration stays live, so it is re-derived each run and never
   lapses; the bot answers it once.
 - **Nothing at all** for ``LAPSE_TRADING_DAYS`` trading days after its entry
@@ -101,8 +102,9 @@ def bind_and_commit(conn: sqlite3.Connection, *, as_of: str, now: str) -> BindRe
     """Bind every live declaration that matches a new-trade proposal, and commit.
 
     A live declaration that matches nothing and is ``LAPSE_TRADING_DAYS`` past
-    its entry date on ``as_of`` lapses. ``now`` stamps each binding and lapse.
-    Commits (through :func:`trades.confirm`).
+    its entry date on ``as_of`` lapses; one matching a committed Trade sets its
+    Stop or is refused (:func:`_onto_committed`). ``now`` stamps each binding
+    and lapse. Commits.
     """
     declarations = StopDeclarationStore(conn)
     bindings = StopDeclarationBindingStore(conn)
@@ -135,10 +137,10 @@ def bind_and_commit(conn: sqlite3.Connection, *, as_of: str, now: str) -> BindRe
     for key, decl in live.items():
         trade = committed.get(key)
         if trade is not None:
-            refusal = _onto_committed(conn, decl, trade)
+            refusal = _onto_committed(conn, decl, trade, bindings, now)
             if refusal is not None:
                 refusals.append(refusal)
-            elif bindings.record(decl.relay_id, trade["id"], now):
+            else:
                 bound += 1
             continue
         proposal = new_trades.get(key)
@@ -195,7 +197,11 @@ def bind_and_commit(conn: sqlite3.Connection, *, as_of: str, now: str) -> BindRe
 
 
 def _onto_committed(
-    conn: sqlite3.Connection, decl: StopDeclarationEvent, trade: sqlite3.Row
+    conn: sqlite3.Connection,
+    decl: StopDeclarationEvent,
+    trade: sqlite3.Row,
+    bindings: StopDeclarationBindingStore,
+    now: str,
 ) -> Optional[Refusal]:
     """Apply ``decl`` to a Trade already committed; ``None`` once it has bound.
 
@@ -204,6 +210,11 @@ def _onto_committed(
     that moment (ADR 0009). A Trade that has a Stop keeps it: the Stop is
     immutable (CONTEXT.md). A declared Setup fills a Setup hole and never
     overwrites one. A refusal changes nothing on the Trade.
+
+    The binding is recorded *before* the stop helpers write, because each of
+    them commits: the Stop and the record of which declaration set it land in
+    one transaction, so a run that dies part-way never leaves a Stop that a
+    later run would mistake for one already held.
     """
     def refuse(reason: str) -> Refusal:
         return Refusal(
@@ -220,6 +231,7 @@ def _onto_committed(
     entry = trade["entry_avg_price"]
     if decl.kind != DECLINED and entry and decl.stop >= entry:
         return refuse(ABOVE_ENTRY)
+    bindings.record(decl.relay_id, trade["id"], now)
     if decl.kind == DECLINED:
         stops.decline_stop(conn, trade["id"])
     else:
@@ -238,9 +250,12 @@ LAPSE_TRADING_DAYS = stops.GRACE_TRADING_DAYS
 def _lapses(conn: sqlite3.Connection, decl: StopDeclarationEvent, as_of: str) -> bool:
     """Whether ``decl`` has waited out its window, unmatched, by ``as_of``.
 
-    Counted in trading days off the symbol's bars or the Book's benchmark, and
-    in calendar days where neither is cached (ADR 0009's fallback) — a mistyped
-    symbol has no bars and never will.
+    Counted in trading days off the symbol's bars, else the Book's benchmark,
+    as the grace window is counted for a Trade not yet committed. Where neither
+    is cached it is counted in calendar days (#54): unlike provenance, which
+    keeps the strict rule when the window cannot be counted (ADR 0009), a
+    declaration has to end somehow — a mistyped symbol has no bars and never
+    will.
     """
     elapsed = stops.entry_trading_days_elapsed(
         conn, decl.book, decl.symbol, decl.entry_date, as_of

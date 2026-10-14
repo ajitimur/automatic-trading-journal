@@ -178,12 +178,11 @@ class StopDeclarationLapseStore:
         }
 
     def lapsed(self) -> list[StopDeclarationEvent]:
-        """Every lapsed declaration event, in the order they lapsed."""
+        """Every lapsed declaration event, in the order they were recorded."""
         rows = self._conn.execute(
-            "SELECT " + ", ".join(f"e.{c.strip()}" for c in _COLUMNS.split(",")) + " "
-            "FROM stop_declaration_lapse l "
-            "JOIN stop_declaration_event e ON e.relay_id = l.relay_id "
-            "ORDER BY l.lapsed_at, e.id"
+            f"SELECT {_COLUMNS} FROM stop_declaration_event "
+            "WHERE relay_id IN (SELECT relay_id FROM stop_declaration_lapse) "
+            "ORDER BY id"
         ).fetchall()
         return [_event(r) for r in rows]
 
