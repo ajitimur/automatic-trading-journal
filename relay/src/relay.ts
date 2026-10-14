@@ -45,7 +45,8 @@ export interface RelayDeps {
 
 export interface Relay {
   fetch(request: Request): Promise<Response>;
-  // The cron entry point: applies the TTLs.
+  // The cron entry point, at 20:00 WIB: applies the TTLs and sends the TC
+  // reminder.
   scheduled(): Promise<void>;
   // Whether a TC PDF was forwarded on IDX trading day `day` (YYYY-MM-DD,
   // Jakarta), for the evening reminder. Answers for the last 7 days only.
@@ -413,6 +414,26 @@ export function createRelay(deps: RelayDeps): Relay {
     if (stale.length > 0) await store.deletePdfDays(stale);
   }
 
+  // The cron fires at 20:00 WIB, after the TC has normally landed (17:50 to
+  // 19:35 WIB). On a Jakarta day with IDX declarations still standing (Declined
+  // Stops included: the trade happened all the same) and no forwarded PDF, the
+  // trader gets one reminder naming each declared symbol. A day the trader
+  // declared IDX trades is taken as an IDX trading day.
+  async function remindTc(): Promise<void> {
+    const today = dateIn(clock(), EXCHANGE_TZ.IDX);
+    if (await pdfArrivedOn(today)) return;
+    const symbols = (await recent())
+      .filter((r) => r.parse.book === 'IDX' && r.parse.entry_date === today && !r.withdrawn_by)
+      .sort(bySaid)
+      .map((r) => r.parse.symbol);
+    if (symbols.length === 0) return;
+    await telegram.sendMessage(config.userId, `📄 Forward today's Stockbit TC (${symbols.join(', ')})`);
+  }
+
+  async function pdfArrivedOn(day: string): Promise<boolean> {
+    return (await store.pdfDays()).includes(day);
+  }
+
   async function onPull(): Promise<Response> {
     const items = (await purgeExpired()).map((stored) => stored.item);
     return Response.json({ items });
@@ -497,14 +518,15 @@ export function createRelay(deps: RelayDeps): Relay {
       if (document) return fromMac(request) ? onDocument(decodeURIComponent(document[1]!)) : unauthorized();
       return new Response(null, { status: 404 });
     },
+    // The reminder goes first: a failed cron isn't retried, and a purge
+    // that throws can wait for tomorrow's run where the reminder can't.
     async scheduled() {
+      await remindTc();
       await purgeExpired();
       await purgeRecent();
       await purgePdfDays();
     },
-    async pdfArrivedOn(day) {
-      return (await store.pdfDays()).includes(day);
-    },
+    pdfArrivedOn,
   };
 }
 

@@ -10,6 +10,6 @@ database_name = "trading-journal-relay"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
 migrations_dir = "migrations"
 
-# Daily at 13:00 UTC (20:00 WIB): applies the 30-day TTL.
+# Daily at 13:00 UTC (20:00 WIB): applies the TTLs and sends the TC reminder.
 [triggers]
 crons = ["0 13 * * *"]
