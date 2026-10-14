@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { forward, harness, pushKnownUs, say, TRADER } from './harness.ts';
+import { forward, harness, pushKnownUs, say, TRADER, type Harness } from './harness.ts';
 
 const MORNING = '2026-10-13T02:30:00Z'; // 09:30 WIB, 13 Oct
 const LATER = '2026-10-13T02:45:00Z'; // 09:45 WIB, 13 Oct
@@ -11,7 +11,7 @@ const LUNCH = '2026-10-13T05:00:00Z'; // 12:00 WIB, 13 Oct
 const CRON = '2026-10-13T13:00:00Z'; // 20:00 WIB, 13 Oct
 
 // The cron fires; returns what the bot sent the trader during it.
-async function cron(h: ReturnType<typeof harness>, nowIso = CRON): Promise<{ chatId: number; text: string }[]> {
+async function cron(h: Harness, nowIso = CRON): Promise<Harness['sent']> {
   h.setNow(nowIso);
   const before = h.sent.length;
   await h.relay.scheduled();
@@ -61,6 +61,14 @@ test('a day whose only IDX declaration was withdrawn gets no reminder', async ()
   await say(h, 'BBRI 4120', MORNING);
   await say(h, '/undo', LATER);
   assert.deepEqual(await cron(h), []);
+});
+
+test('a withdrawn Declined Stop does not count', async () => {
+  const h = harness(MORNING);
+  await say(h, 'BBRI 4120', MORNING);
+  await say(h, 'ANTM no sl', LATER);
+  await say(h, '/undo', LUNCH);
+  assert.deepEqual(await cron(h), [{ chatId: TRADER, text: "📄 Forward today's Stockbit TC (BBRI)" }]);
 });
 
 test("yesterday's IDX declarations do not trigger today's reminder", async () => {

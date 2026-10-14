@@ -292,18 +292,23 @@ export function createRelay(deps: RelayDeps): Relay {
   }
 
   // The cron fires at 20:00 WIB, after the TC has normally landed (17:50 to
-  // 19:35 WIB). On a Jakarta day with IDX declarations still standing and no
-  // forwarded PDF, the trader gets one reminder naming each declared symbol.
-  // A day the trader declared IDX trades is taken as an IDX trading day.
+  // 19:35 WIB). On a Jakarta day with IDX declarations still standing (Declined
+  // Stops included: the trade happened all the same) and no forwarded PDF, the
+  // trader gets one reminder naming each declared symbol. A day the trader
+  // declared IDX trades is taken as an IDX trading day.
   async function remindTc(): Promise<void> {
     const today = dateIn(clock(), EXCHANGE_TZ.IDX);
-    if ((await store.pdfDays()).includes(today)) return;
+    if (await pdfArrivedOn(today)) return;
     const symbols = (await recent())
       .filter((r) => r.parse.book === 'IDX' && r.parse.entry_date === today && !r.withdrawn_by)
       .sort(bySaid)
       .map((r) => r.parse.symbol);
     if (symbols.length === 0) return;
     await telegram.sendMessage(config.userId, `📄 Forward today's Stockbit TC (${symbols.join(', ')})`);
+  }
+
+  async function pdfArrivedOn(day: string): Promise<boolean> {
+    return (await store.pdfDays()).includes(day);
   }
 
   async function onPull(): Promise<Response> {
@@ -379,15 +384,15 @@ export function createRelay(deps: RelayDeps): Relay {
       if (document) return fromMac(request) ? onDocument(decodeURIComponent(document[1]!)) : unauthorized();
       return new Response(null, { status: 404 });
     },
+    // The reminder goes first: a failed cron isn't retried, and a purge
+    // that throws can wait for tomorrow's run where the reminder can't.
     async scheduled() {
+      await remindTc();
       await purgeExpired();
       await purgeRecent();
       await purgePdfDays();
-      await remindTc();
     },
-    async pdfArrivedOn(day) {
-      return (await store.pdfDays()).includes(day);
-    },
+    pdfArrivedOn,
   };
 }
 
