@@ -152,6 +152,42 @@ class StopDeclarationBindingStore:
         }
 
 
+class StopDeclarationLapseStore:
+    """Which Stop Declarations lapsed unmatched (#54).
+
+    A lapsed declaration is never live again, so it cannot bind a Trade whose
+    Fills arrive after it lapsed. Recording is idempotent on the relay id.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def record(self, relay_id: str, lapsed_on: str, lapsed_at: str) -> bool:
+        """Record that ``relay_id`` lapsed on ``lapsed_on``. Does not commit."""
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO stop_declaration_lapse "
+            "(relay_id, lapsed_on, lapsed_at) VALUES (?, ?, ?)",
+            (relay_id, lapsed_on, lapsed_at),
+        )
+        return cur.rowcount == 1
+
+    def lapsed_relay_ids(self) -> set[str]:
+        return {
+            r["relay_id"]
+            for r in self._conn.execute("SELECT relay_id FROM stop_declaration_lapse")
+        }
+
+    def lapsed(self) -> list[StopDeclarationEvent]:
+        """Every lapsed declaration event, in the order they lapsed."""
+        rows = self._conn.execute(
+            "SELECT " + ", ".join(f"e.{c.strip()}" for c in _COLUMNS.split(",")) + " "
+            "FROM stop_declaration_lapse l "
+            "JOIN stop_declaration_event e ON e.relay_id = l.relay_id "
+            "ORDER BY l.lapsed_at, e.id"
+        ).fetchall()
+        return [_event(r) for r in rows]
+
+
 def _event(row: sqlite3.Row) -> StopDeclarationEvent:
     return StopDeclarationEvent(
         relay_id=row["relay_id"],
