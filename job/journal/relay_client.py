@@ -7,7 +7,9 @@ The relay's Mac-facing contract, as pinned by
   order, each ``{id, telegram_at, text, parse}``.
 * ``POST /ack`` takes ``{"ids": [...]}``, deletes those items, answers 204, and
   is idempotent.
-* Both need ``Authorization: Bearer <MAC_SECRET>``.
+* ``PUT /known-us-symbols`` takes ``{"symbols": [...]}`` and replaces the list
+  the relay reads a 4-letter symbol as US by (#51).
+* All three need ``Authorization: Bearer <MAC_SECRET>``.
 
 The relay sits on the open internet, behind the same ISP whose DNS interception
 the Flex client was built against, so it takes the same path: each call resolves
@@ -96,6 +98,15 @@ class RelayClient:
             "POST",
             "/ack",
             body=json.dumps({"ids": list(ids)}).encode("utf-8"),
+            content_type="application/json",
+        )
+
+    def push_known_us_symbols(self, symbols: Sequence[str]) -> None:
+        """Replace the relay's list of symbols the journal knows on the US book."""
+        self._send(
+            "PUT",
+            "/known-us-symbols",
+            body=json.dumps({"symbols": list(symbols)}).encode("utf-8"),
             content_type="application/json",
         )
 

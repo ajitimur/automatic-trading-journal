@@ -124,6 +124,25 @@ class AcknowledgeTest(unittest.TestCase):
             _client(transport).acknowledge(["1"])
 
 
+class KnownUsPushTest(unittest.TestCase):
+    def test_the_push_puts_the_symbols_as_json_with_the_mac_secret(self):
+        transport = FakeTransport("")
+        _client(transport, secret="s3cret").push_known_us_symbols(["AAPL", "META"])
+
+        [call] = transport.calls
+        self.assertEqual(call["method"], "PUT")
+        self.assertEqual(call["url"], f"{BASE}/known-us-symbols")
+        self.assertEqual(call["addresses"], ADDRESSES)
+        self.assertEqual(call["headers"]["Authorization"], "Bearer s3cret")
+        self.assertEqual(call["headers"]["Content-Type"], "application/json")
+        self.assertEqual(json.loads(call["body"]), {"symbols": ["AAPL", "META"]})
+
+    def test_the_push_checks_for_interception_too(self):
+        transport = FakeTransport("", connected_ip="10.0.0.1")
+        with self.assertRaises(flex_client.InterceptionError):
+            _client(transport).push_known_us_symbols(["META"])
+
+
 class DefaultClientTest(unittest.TestCase):
     def setUp(self):
         self._saved = os.environ.pop(relay_client.URL_ENV, None)

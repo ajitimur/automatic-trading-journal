@@ -4,18 +4,20 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { d1Store, type D1Database, type D1Statement } from '../src/d1Store.ts';
-import { ack, harness, pull, sendFixtureMessages, TRADER, update, webhook } from './harness.ts';
+import { ack, harness, pull, pushKnownUs, say, sendFixtureMessages, TRADER, update, webhook } from './harness.ts';
 
-// The same migration `wrangler d1 migrations apply` runs.
-const MIGRATION = join(resolve(import.meta.dirname, '..'), 'migrations', '0001_items.sql');
+// The same migrations `wrangler d1 migrations apply` runs, in its order.
+const MIGRATIONS = join(resolve(import.meta.dirname, '..'), 'migrations');
 
 function sqliteD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  db.exec(readFileSync(MIGRATION, 'utf8'));
+  for (const name of readdirSync(MIGRATIONS).filter((n) => n.endsWith('.sql')).sort()) {
+    db.exec(readFileSync(join(MIGRATIONS, name), 'utf8'));
+  }
   return {
     prepare(sql) {
       const statement = (values: unknown[]): D1Statement => ({
@@ -64,4 +66,42 @@ test('over D1, the scheduled handler deletes items past the 30-day TTL', async (
   h.setNow('2026-11-12T03:00:01Z');
   await h.relay.scheduled();
   assert.deepEqual(await h.store.list(), []);
+});
+
+test('over D1, a resend says what it replaced even once the Mac has acknowledged the first', async () => {
+  const h = d1Harness();
+  await say(h, 'BBRI 412', '2026-10-13T02:15:00Z', 9301);
+  await ack(h, ['9301']);
+  assert.equal(
+    await say(h, 'BBRI 4120 htf', '2026-10-13T02:16:00Z', 9302),
+    '✓ IDX BBRI SL 4,120, high tight flag, entry 13 Oct (replaced 412 → 4,120 htf)',
+  );
+});
+
+test('over D1, /undo withdraws the last declaration once, however often Telegram retries it', async () => {
+  const h = d1Harness();
+  await say(h, 'BBRI 4120', '2026-10-13T02:15:00Z', 9401);
+  await say(h, 'TLKM no sl', '2026-10-13T02:16:00Z', 9402);
+  const withdrewTlkm = '↩ Withdrew IDX TLKM no SL (declined), entry 13 Oct';
+  assert.equal(await say(h, '/undo', '2026-10-13T02:17:00Z', 9403), withdrewTlkm);
+  assert.equal(await say(h, '/undo', '2026-10-13T02:17:00Z', 9403), withdrewTlkm);
+  assert.equal(await say(h, '/undo', '2026-10-13T02:18:00Z', 9404), '↩ Withdrew IDX BBRI SL 4,120, entry 13 Oct');
+  assert.equal(await say(h, '/undo', '2026-10-13T02:19:00Z', 9405), '✗ Nothing to undo');
+});
+
+test('over D1, the known-US list is replaced on each push', async () => {
+  const h = d1Harness();
+  assert.equal(await say(h, 'META 590', '2026-10-13T18:00:00Z'), '✓ IDX META SL 590, entry 14 Oct');
+  await pushKnownUs(h, ['META']);
+  assert.equal(await say(h, 'META 590', '2026-10-13T18:00:00Z'), '✓ US META SL 590, entry 13 Oct');
+  await pushKnownUs(h, []);
+  assert.match((await say(h, 'META 600', '2026-10-13T18:01:00Z')) ?? '', /^✓ IDX META SL 600, entry 14 Oct/);
+});
+
+test('over D1, the scheduled handler forgets declarations past 7 days', async () => {
+  const h = d1Harness('2026-10-13T03:00:00Z');
+  await say(h, 'BBRI 4120', '2026-10-13T02:15:00Z');
+  h.setNow('2026-10-20T03:00:00Z');
+  await h.relay.scheduled();
+  assert.deepEqual(await h.store.recent(), []);
 });

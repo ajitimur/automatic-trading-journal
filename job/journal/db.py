@@ -13,10 +13,11 @@ render "no Trades yet" today.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 
 # Bumped when the schema changes so a later ticket can migrate rather than guess.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 SCHEMA = """
 -- Scope Start per book (ADR 0008): the date from which this Book's Trades count.
@@ -133,6 +134,7 @@ CREATE TABLE IF NOT EXISTS trade (
     reviewed_at     TEXT,                           -- review-surface stamp (#40), NULL until *Reviewed →*
     note            TEXT,                           -- review-surface free-text note (#40), not freeze-locked
     stop_declined   INTEGER NOT NULL DEFAULT 0,     -- confirm asked for a stop and the trader declined (ADR 0010)
+    auto_committed  INTEGER NOT NULL DEFAULT 0,     -- a bound Stop Declaration committed it without confirm (ADR 0012)
     UNIQUE (book, symbol, entry_date)
 );
 
@@ -390,20 +392,38 @@ CREATE TABLE IF NOT EXISTS raw_document (
 -- declaration stays on the record. Looked up by (book, symbol, entry_date), the
 -- key it binds to a Trade on; `relay_id` is unique so re-pulling an item the
 -- relay still holds adds nothing. Dated by `telegram_at`, when it was said, not
--- `recorded_at`, when the journal read it.
+-- `recorded_at`, when the journal read it. `kind` (#51) is what was said: a
+-- stop, a Declined Stop (`no sl`), or an `/undo` that withdraws the key; only a
+-- `declared` event carries a stop.
 CREATE TABLE IF NOT EXISTS stop_declaration_event (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     relay_id    TEXT NOT NULL UNIQUE,  -- the relay's stable id (Telegram update_id)
+    kind        TEXT NOT NULL DEFAULT 'declared'
+                CHECK (kind IN ('declared', 'declined', 'withdrawn')),
     book        TEXT NOT NULL,
     symbol      TEXT NOT NULL,
     entry_date  TEXT NOT NULL,         -- ISO date in the book's exchange time zone
-    stop        REAL NOT NULL,
+    stop        REAL,                  -- set exactly when kind = 'declared'
+    setup       TEXT,                  -- base_breakout | high_tight_flag | other, if given
     telegram_at TEXT NOT NULL,         -- UTC ISO, when the trader sent it
     recorded_at TEXT NOT NULL,         -- when the run recorded it
-    raw_ref     INTEGER NOT NULL REFERENCES raw_document(id)
+    raw_ref     INTEGER NOT NULL REFERENCES raw_document(id),
+    CHECK ((kind = 'declared') = (stop IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS stop_declaration_event_key
     ON stop_declaration_event (book, symbol, entry_date);
+
+-- A Stop Declaration that bound to a Trade and committed it (ADR 0012, #50).
+-- One row per declaration event that bound — `relay_id` is the live event for
+-- its (book, symbol, entry_date), `trade_id` the Trade it committed. Keyed on
+-- `relay_id` so re-pulling or re-running a declaration binds at most once: the
+-- next run sees it already bound and leaves the committed Trade alone. This is
+-- the record of *which* declaration set *which* Trade's Stop.
+CREATE TABLE IF NOT EXISTS stop_declaration_binding (
+    relay_id TEXT PRIMARY KEY REFERENCES stop_declaration_event(relay_id),
+    trade_id INTEGER NOT NULL REFERENCES trade(id),
+    bound_at TEXT NOT NULL            -- when the run bound it
+);
 
 -- The risk/exposure denominator, and nothing more (SPEC §9). Mark-to-market
 -- NAV, not deposited capital; one job, not the book's equity curve. Identity is
@@ -552,6 +572,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     _migrate_trade_columns(conn)
     _migrate_trade_exit_columns(conn)
     _migrate_counterfactual_columns(conn)
+    _migrate_stop_declaration_event(conn)
     conn.commit()
     return conn
 
@@ -599,6 +620,9 @@ _TRADE_COLUMNS = {
     # The stop demanded at confirm, answered either way (ADR 0010). 1 means the
     # trader was asked and chose the permanent hole; the nag then leaves it alone.
     "stop_declined": "INTEGER NOT NULL DEFAULT 0",
+    # A bound Stop Declaration committed this Trade without confirm (ADR 0012,
+    # #50), so the weekly review can show what landed unseen.
+    "auto_committed": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -643,3 +667,52 @@ def _migrate_counterfactual_columns(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"ALTER TABLE trade_counterfactual ADD COLUMN {name} {decl}"
             )
+
+
+def _migrate_stop_declaration_event(conn: sqlite3.Connection) -> None:
+    """Bring a #49 ``stop_declaration_event`` forward to the full grammar (#51).
+
+    The first build had ``stop REAL NOT NULL`` and no ``kind`` or ``setup``.
+    SQLite cannot relax a NOT NULL with ALTER, so the table is rebuilt the way
+    SQLite documents it: foreign keys off, copy into a new table, drop, rename,
+    re-check, all in one transaction. Every existing row was a stop, so it
+    becomes ``declared``. The new table's DDL is taken from :data:`SCHEMA`, so
+    there is one definition of it. Idempotent: a table with ``kind`` is left be.
+    """
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(stop_declaration_event)")}
+    if "kind" in existing:
+        return
+    ddl = re.search(
+        r"CREATE TABLE IF NOT EXISTS stop_declaration_event \(.*?\n\);", SCHEMA, re.S
+    ).group(0).replace("stop_declaration_event (", "stop_declaration_event_v13 (", 1)
+    conn.commit()
+    # Only takes effect outside a transaction; the binding table's references to
+    # the event table must not be checked while it is briefly absent.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            "BEGIN;\n"
+            f"{ddl}\n"
+            "INSERT INTO stop_declaration_event_v13 (id, relay_id, kind, book, symbol, "
+            "entry_date, stop, telegram_at, recorded_at, raw_ref) "
+            "SELECT id, relay_id, 'declared', book, symbol, entry_date, stop, "
+            "telegram_at, recorded_at, raw_ref FROM stop_declaration_event;\n"
+            "DROP TABLE stop_declaration_event;\n"
+            "ALTER TABLE stop_declaration_event_v13 RENAME TO stop_declaration_event;\n"
+            "CREATE INDEX IF NOT EXISTS stop_declaration_event_key "
+            "ON stop_declaration_event (book, symbol, entry_date);\n"
+            "COMMIT;"
+        )
+    except sqlite3.Error:
+        # executescript leaves a failed script's transaction open; undo it so
+        # the old table stands and the file opens as it was.
+        if conn.in_transaction:
+            conn.rollback()
+        conn.execute("PRAGMA foreign_keys = ON")
+        raise
+    try:
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise sqlite3.IntegrityError(f"foreign keys broken by the v13 migration: {broken}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")

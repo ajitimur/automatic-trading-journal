@@ -586,6 +586,8 @@ def confirm(
     declined: Optional[Collection[CohortKey]] = None,
     demand_stop: bool = False,
     stop_set_at: Optional[Mapping[CohortKey, str]] = None,
+    auto_commit: bool = False,
+    setups_by_trade: Optional[Mapping[CohortKey, str]] = None,
 ) -> ConfirmResult:
     """Commit the proposals: land new Trades, apply add-fills/restatements, allocate exits.
 
@@ -622,12 +624,28 @@ def confirm(
     share a symbol. ``stop_set_at`` optionally gives, per cohort, when the stop
     was set; Stop Provenance derives from it instead of from this run's date
     (ADR 0009, ADR 0012). A cohort it omits keeps today's date as before.
+
+    **Under ``auto_commit`` only a bound declaration's Trade commits** (ADR 0012,
+    #50). This is the daily run's auto-commit door, not the human one: it lands
+    *only* the ``new-trade`` proposals whose cohort key is answered — a stop in
+    ``stops_by_trade`` or a decline in ``declined`` — and marks each
+    ``auto_committed``. Every other proposal kind is left untouched for the human
+    door: an undeclared new-trade is held, add-fills and restatements are not
+    re-derived, and exits — a same-day round trip included — stay in the queue.
+    The caller (``journal.binding``) has already dropped any declaration whose
+    stop sits at or above entry, so the guard below never fires in this mode.
+
+    ``setups_by_trade`` sets the Setup, per cohort, on each new Trade that
+    lands, so a declared Setup arrives with the commit (#51). It answers
+    nothing: a Setup alone neither satisfies the stop demand nor lets a Trade
+    through the auto-commit door.
     """
     overrides = overrides or {}
     reasons = reasons or {}
     stops_by_trade = stops_by_trade or {}
     declined_set = set(declined or ())
     stop_set_at = stop_set_at or {}
+    setups_by_trade = setups_by_trade or {}
     result = ConfirmResult()
     proposals = propose(conn)
 
@@ -647,9 +665,16 @@ def confirm(
             )
 
     # Land new Trades first so exits in the same batch have a Trade to hit.
+    auto_keys = set(stops_by_trade) | declined_set
     answered: List[Proposal] = []
     for p in proposals:
         if p.kind != "new-trade":
+            continue
+        if auto_commit and cohort_key(p) not in auto_keys:
+            # Auto-commit lands *only* a bound declaration's Trade (ADR 0012).
+            # An undeclared new-trade is held for the human door, exactly as an
+            # unanswered one is — no `unanswered` row, because no one was asked
+            # here; the confirm door still demands and nags it.
             continue
         if (
             demand_stop
@@ -660,17 +685,20 @@ def confirm(
             continue
         cur = conn.execute(
             "INSERT OR IGNORE INTO trade (book, symbol, entry_date, entry_qty, "
-            "entry_avg_price, status) VALUES (?, ?, ?, ?, ?, 'open')",
-            (p.book, p.symbol, p.entry_date, p.quantity, p.avg_price),
+            "entry_avg_price, status, auto_committed) VALUES (?, ?, ?, ?, ?, 'open', ?)",
+            (p.book, p.symbol, p.entry_date, p.quantity, p.avg_price, 1 if auto_commit else 0),
         )
         result.new_trades += cur.rowcount
         answered.append(p)
 
-    result.added_fills = sum(1 for p in proposals if p.kind == "add-fills")
-    result.restatements = sum(1 for p in proposals if p.kind == "restatement")
-    result.drifts = sum(1 for p in proposals if p.kind == "drift")
-    # Add-fills and restatement land by re-deriving the entry side from the Fills.
-    _rederive_entry_sides(conn)
+    if not auto_commit:
+        # Add-fills and restatements re-derive the entry side of a committed
+        # Trade from its Fills — never through the auto-commit door, which binds
+        # only clean new-trades and leaves every other kind for the human (§5.3).
+        result.added_fills = sum(1 for p in proposals if p.kind == "add-fills")
+        result.restatements = sum(1 for p in proposals if p.kind == "restatement")
+        result.drifts = sum(1 for p in proposals if p.kind == "drift")
+        _rederive_entry_sides(conn)
 
     # Resolve every cohort key to its trade id (committed just now or earlier).
     ids = _trade_ids(conn)
@@ -696,34 +724,45 @@ def confirm(
                 "UPDATE trade SET stop_declined = 1 WHERE id = ?", (trade_id,)
             )
             result.stops_declined += 1
+        if key in setups_by_trade:
+            # A plain UPDATE inside confirm's transaction, not `stops.set_setup`,
+            # which commits on its own; the Trade landed just now, so it is
+            # unfrozen, and intake has already held the setup to the vocabulary.
+            conn.execute(
+                "UPDATE trade SET setup = ? WHERE id = ?", (setups_by_trade[key], trade_id)
+            )
 
-    # Working open quantities, so overrides can be bounds-checked as we go.
-    open_qty = _working_open_qty(conn)
+    # Exits — skipped entirely when auto-committing, so a same-day round trip's
+    # sell stays in the queue for the weekly bulk exit-reason confirm (ADR 0012).
+    if not auto_commit:
+        # Working open quantities, so overrides can be bounds-checked as we go.
+        open_qty = _working_open_qty(conn)
 
-    touched: set[int] = set()
-    for p in proposals:
-        if p.kind == "orphan-exit":
-            result.parked_exits += 1
-            continue
-        if p.kind != "exit-allocation":
-            continue
-        allocations = _resolve_allocations(p, overrides, ids, open_qty)
-        # An exit whose Trade is being held for an unanswered stop has nowhere to
-        # land yet (ADR 0010) — a same-day round trip proposes both at once. It
-        # waits with its Trade rather than erroring, and both go through together
-        # on the confirm that answers the demand.
-        if any((a.book, a.symbol, a.entry_date) not in ids for a in allocations):
-            result.parked_exits += 1
-            continue
-        if p.over_allocated > 0:
-            # The part that fits commits below; the remainder stays unallocated
-            # on the Fill and re-derives as an orphan exit (SPEC §3.4, §5.2).
-            result.parked_exits += 1
-        reason = reasons.get(p.source_ref or "") or p.proposed_reason
-        _commit_exit(conn, p, allocations, reason, ids, open_qty, touched)
-        result.exits_allocated += 1
+        touched: set[int] = set()
+        for p in proposals:
+            if p.kind == "orphan-exit":
+                result.parked_exits += 1
+                continue
+            if p.kind != "exit-allocation":
+                continue
+            allocations = _resolve_allocations(p, overrides, ids, open_qty)
+            # An exit whose Trade is being held for an unanswered stop has nowhere
+            # to land yet (ADR 0010) — a same-day round trip proposes both at once.
+            # It waits with its Trade rather than erroring, and both go through
+            # together on the confirm that answers the demand.
+            if any((a.book, a.symbol, a.entry_date) not in ids for a in allocations):
+                result.parked_exits += 1
+                continue
+            if p.over_allocated > 0:
+                # The part that fits commits below; the remainder stays unallocated
+                # on the Fill and re-derives as an orphan exit (SPEC §3.4, §5.2).
+                result.parked_exits += 1
+            reason = reasons.get(p.source_ref or "") or p.proposed_reason
+            _commit_exit(conn, p, allocations, reason, ids, open_qty, touched)
+            result.exits_allocated += 1
 
-    result.closed_trades = _close_filled(conn, open_qty, touched)
+        result.closed_trades = _close_filled(conn, open_qty, touched)
+
     conn.commit()
     return result
 
