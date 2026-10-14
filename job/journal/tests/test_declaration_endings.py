@@ -66,7 +66,7 @@ class FakeRelay:
     def acknowledge(self, ids):
         self.items = [i for i in self.items if i.get("id") not in set(ids)]
 
-    def send(self, text):
+    def send(self, text, *, trade=None, offer=None):
         if self.fail_send is not None:
             raise self.fail_send
         self.sent.append(text)

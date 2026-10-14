@@ -257,7 +257,7 @@ def _lapses(conn: sqlite3.Connection, decl: StopDeclarationEvent, as_of: str) ->
     declaration has to end somehow — a mistyped symbol has no bars and never
     will.
     """
-    elapsed = stops.entry_trading_days_elapsed(
+    elapsed = stops.trading_days_after(
         conn, decl.book, decl.symbol, decl.entry_date, as_of
     )
     if elapsed is None:

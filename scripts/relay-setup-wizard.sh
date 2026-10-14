@@ -435,7 +435,7 @@ set_resp="$(curl -sS -m 30 "${resolve_args[@]+"${resolve_args[@]}"}" \
   "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
   --data-urlencode "url=$JOURNAL_RELAY_URL/telegram" \
   --data-urlencode "secret_token=$WEBHOOK_SECRET" \
-  --data-urlencode "allowed_updates=[\"message\"]" || true)"
+  --data-urlencode "allowed_updates=[\"message\",\"callback_query\"]" || true)"
 if printf '%s' "$set_resp" | grep -q '"ok":true'; then
   printf '  %s✓%s webhook registered at %s/telegram\n' "$GREEN" "$RESET" "$hook_host"
 else

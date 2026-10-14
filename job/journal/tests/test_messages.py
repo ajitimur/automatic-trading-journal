@@ -5,12 +5,18 @@ asked it to send, plus Fills seeded straight into the ledger. Every test reads
 what went out through that fake and what the run row recorded.
 """
 
+import json
 import os
 import tempfile
 import unittest
 
 from journal import books, db, fills, flex, trades
+from journal.relay_client import Offer
 from journal.run import execute_run
+
+FIXTURE = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "docs", "samples", "relay-pull-fixture.json"
+)
 
 
 def _buy(ref, symbol, qty, price, when, book="IDX", source="stockbit"):
@@ -33,12 +39,19 @@ def _declaration(relay_id, book, symbol, stop, entry_date, telegram_at):
     }
 
 
+def _fixture_item(relay_id):
+    with open(FIXTURE, encoding="utf-8") as fh:
+        [item] = [i for i in json.load(fh)["items"] if i["id"] == relay_id]
+    return item
+
+
 class FakeRelay:
     """The relay seam: items to pull in, messages sent out."""
 
     def __init__(self, items=(), fail_send=None):
         self.items = list(items)
-        self.sent = []
+        self.sent = []      # the text of each message
+        self.calls = []     # (text, trade, offer) per message
         self.fail_send = fail_send
 
     def pull(self):
@@ -47,10 +60,11 @@ class FakeRelay:
     def acknowledge(self, ids):
         self.items = [i for i in self.items if i.get("id") not in set(ids)]
 
-    def send(self, text):
+    def send(self, text, *, trade=None, offer=None):
         if self.fail_send is not None:
             raise self.fail_send
         self.sent.append(text)
+        self.calls.append((text, trade, offer))
         return 500 + len(self.sent)
 
 
@@ -194,6 +208,135 @@ class MessagesTest(unittest.TestCase):
         self.assertEqual(row["telegram_message_id"], 501)
         self.assertEqual(row["run_id"], result.run_id)
         self.assertEqual(row["text"], relay.sent[0])
+
+    # -- answering a nag (#55) ------------------------------------------------
+
+    def test_the_nag_names_its_trade_to_the_relay_so_a_reply_finds_it(self):
+        self._fills(_buy("b1", "BBRI", 1000, 4200, "2026-10-13T09:20:00+07:00"))
+        relay = FakeRelay()
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        [(_, trade, offer)] = relay.calls
+        self.assertEqual(trade, ("IDX", "BBRI", "2026-10-13"))
+        self.assertIsNone(offer)
+
+    def test_a_refusal_names_its_trade_too_so_a_bare_resend_finds_it(self):
+        self._fills(_buy("b1", "BBRI", 1000, 4000, "2026-10-13T09:20:00+07:00"))
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4120, "2026-10-13", "2026-10-13T02:15:00Z"),
+        ])
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        [(_, trade, _)] = relay.calls
+        self.assertEqual(trade, ("IDX", "BBRI", "2026-10-13"))
+
+    def test_a_reply_to_a_nag_binds_on_the_next_run(self):
+        # The shared fixture's bare reply `2650 bb`, resolved by the relay to the
+        # nag's ADRO Trade of 13 Oct.
+        self._fills(_buy("a1", "ADRO", 1000, 2800, "2026-10-13T09:20:00+07:00"))
+        relay = FakeRelay()
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+        self.assertEqual(len(relay.sent), 1)
+
+        relay.items = [_fixture_item("583201009")]
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        trade = self.conn.execute("SELECT * FROM trade WHERE symbol = 'ADRO'").fetchone()
+        self.assertEqual(trade["entry_date"], "2026-10-13")
+        self.assertEqual(trade["stop"], 2650)
+        self.assertEqual(trade["setup"], "base_breakout")
+        self.assertEqual(trade["auto_committed"], 1)
+
+    def _split_day(self, first_stop=4120):
+        """BBRI bought on 13 and 14 Oct; the 13th committed with ``first_stop``."""
+        self._fills(_buy("b1", "BBRI", 1000, 4200, "2026-10-13T09:20:00+07:00"))
+        items = []
+        if first_stop is not None:
+            items.append(_declaration(
+                "1", "IDX", "BBRI", first_stop, "2026-10-13", "2026-10-13T02:15:00Z"
+            ))
+        relay = FakeRelay(items)
+        execute_run(self.conn, as_of="2026-10-13", relay=relay)
+        self._fills(_buy("b2", "BBRI", 500, 4250, "2026-10-14T09:10:00+07:00"))
+        self._bars("IDX", "BBRI", "2026-10-13", "2026-10-14", "2026-10-15")
+        return relay
+
+    def test_a_split_day_second_trade_is_offered_the_first_days_stop(self):
+        relay = self._split_day()
+        relay.sent.clear(); relay.calls.clear()
+        execute_run(self.conn, as_of="2026-10-15", relay=relay)
+
+        [(text, trade, offer)] = relay.calls
+        self.assertEqual(trade, ("IDX", "BBRI", "2026-10-14"))
+        self.assertEqual(offer, Offer(stop=4120, entry_date="2026-10-13"))
+        self.assertIn("Same as BBRI 13 Oct (4,120)?", text)
+
+    def test_tapping_yes_declares_the_first_stop_for_the_second_trade(self):
+        # The shared fixture's tap: the relay's declaration of 4,120 for 14 Oct.
+        relay = self._split_day()
+        execute_run(self.conn, as_of="2026-10-15", relay=relay)
+        relay.items = [_fixture_item("583201010")]
+        execute_run(self.conn, as_of="2026-10-15", relay=relay)
+
+        second = self.conn.execute(
+            "SELECT * FROM trade WHERE symbol = 'BBRI' AND entry_date = '2026-10-14'"
+        ).fetchone()
+        self.assertEqual(second["stop"], 4120)
+        self.assertEqual(second["stop_provenance"], "recorded")
+        self.assertEqual(second["auto_committed"], 1)
+
+    def test_no_offer_when_the_first_trade_has_no_stop(self):
+        relay = self._split_day(first_stop=None)
+        relay.sent.clear(); relay.calls.clear()
+        execute_run(self.conn, as_of="2026-10-15", relay=relay)
+
+        offers = {trade: offer for _, trade, offer in relay.calls}
+        self.assertIsNone(offers[("IDX", "BBRI", "2026-10-14")])
+
+    def test_no_offer_from_a_trade_entered_more_than_three_trading_days_before(self):
+        self._fills(_buy("b1", "BBRI", 1000, 4200, "2026-10-08T09:20:00+07:00"))
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4120, "2026-10-08", "2026-10-08T02:15:00Z"),
+        ])
+        execute_run(self.conn, as_of="2026-10-08", relay=relay)
+        self._fills(_buy("b2", "BBRI", 500, 4250, "2026-10-14T09:10:00+07:00"))
+        self._bars("IDX", "BBRI", "2026-10-08", "2026-10-09", "2026-10-12",
+                   "2026-10-13", "2026-10-14")
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        [(text, trade, offer)] = relay.calls
+        self.assertEqual(trade, ("IDX", "BBRI", "2026-10-14"))
+        self.assertIsNone(offer)
+        self.assertNotIn("Same as", text)
+
+    def test_no_offer_from_an_old_trade_whose_bars_stopped_short(self):
+        # The symbol's cached bars ended weeks ago, so they count no trading
+        # days since; the calendar still says it is a separate entry.
+        self._fills(_buy("b1", "BBRI", 1000, 4200, "2026-09-01T09:20:00+07:00"))
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4120, "2026-09-01", "2026-09-01T02:15:00Z"),
+        ])
+        execute_run(self.conn, as_of="2026-09-01", relay=relay)
+        self._bars("IDX", "BBRI", "2026-09-01", "2026-09-02")
+        self._fills(_buy("b2", "BBRI", 500, 4250, "2026-10-14T09:10:00+07:00"))
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        [(_, trade, offer)] = relay.calls
+        self.assertEqual(trade, ("IDX", "BBRI", "2026-10-14"))
+        self.assertIsNone(offer)
+
+    def test_no_offer_from_the_same_symbol_on_the_other_book(self):
+        self._fills(_buy("u1", "BBRI", 10, 42, "2026-10-13T10:00:00-04:00", book="US", source="ibkr"))
+        relay = FakeRelay([
+            _declaration("1", "US", "BBRI", 40, "2026-10-13", "2026-10-13T14:15:00Z"),
+        ])
+        execute_run(self.conn, as_of="2026-10-13", relay=relay)
+        self._fills(_buy("b2", "BBRI", 500, 4250, "2026-10-14T09:10:00+07:00"))
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        [(_, trade, offer)] = relay.calls
+        self.assertEqual(trade, ("IDX", "BBRI", "2026-10-14"))
+        self.assertIsNone(offer)
 
     # -- the refusal ----------------------------------------------------------
 
