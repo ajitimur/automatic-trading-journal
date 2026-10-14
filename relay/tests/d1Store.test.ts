@@ -8,7 +8,19 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { d1Store, type D1Database, type D1Statement } from '../src/d1Store.ts';
-import { ack, harness, pull, pushKnownUs, say, sendFixtureMessages, TRADER, update, webhook } from './harness.ts';
+import {
+  ack,
+  forward,
+  harness,
+  mac,
+  pull,
+  pushKnownUs,
+  say,
+  sendFixtureMessages,
+  TRADER,
+  update,
+  webhook,
+} from './harness.ts';
 
 // The same migrations `wrangler d1 migrations apply` runs, in its order.
 const MIGRATIONS = join(resolve(import.meta.dirname, '..'), 'migrations');
@@ -104,4 +116,21 @@ test('over D1, the scheduled handler forgets declarations past 7 days', async ()
   h.setNow('2026-10-20T03:00:00Z');
   await h.relay.scheduled();
   assert.deepEqual(await h.store.recent(), []);
+});
+
+test('over D1, a forwarded PDF is held and fetched, marks its Jakarta day once, and the day goes after 7', async () => {
+  const h = d1Harness('2026-10-13T12:00:00Z');
+  h.files.set('file-9501', new Uint8Array([0x25, 0x50, 0x44, 0x46]));
+  const tc = { file_name: 'TC.pdf', mime_type: 'application/pdf' };
+  await forward(h, tc, '2026-10-13T11:20:00Z', 9501);
+  await forward(h, tc, '2026-10-13T11:20:00Z', 9501);
+  await forward(h, tc, '2026-10-13T11:25:00Z', 9502);
+  assert.deepEqual((await pull(h)).items.map((i) => i.id), ['9501', '9502']);
+  assert.deepEqual(await (await h.relay.fetch(mac('/documents/9501'))).json(), { id: '9501', content_base64: 'JVBERg==' });
+  assert.deepEqual(await h.store.pdfDays(), ['2026-10-13']);
+  assert.equal(await h.relay.pdfArrivedOn('2026-10-13'), true);
+
+  h.setNow('2026-10-20T17:00:00Z'); // 00:00 WIB, 21 Oct
+  await h.relay.scheduled();
+  assert.equal(await h.relay.pdfArrivedOn('2026-10-13'), false);
 });

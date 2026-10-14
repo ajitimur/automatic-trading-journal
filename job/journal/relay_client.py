@@ -7,9 +7,11 @@ The relay's Mac-facing contract, as pinned by
   order, each ``{id, telegram_at, text, parse}``.
 * ``POST /ack`` takes ``{"ids": [...]}``, deletes those items, answers 204, and
   is idempotent.
+* ``GET /documents/<id>`` returns ``{"id", "content_base64"}``, the bytes of a
+  forwarded TC PDF the relay still holds (#52).
 * ``PUT /known-us-symbols`` takes ``{"symbols": [...]}`` and replaces the list
   the relay reads a 4-letter symbol as US by (#51).
-* All three need ``Authorization: Bearer <MAC_SECRET>``.
+* All four need ``Authorization: Bearer <MAC_SECRET>``.
 
 The relay sits on the open internet, behind the same ISP whose DNS interception
 the Flex client was built against, so it takes the same path: each call resolves
@@ -22,6 +24,7 @@ Flex client's :class:`~journal.doh.DohResolver` and
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.parse
@@ -109,6 +112,27 @@ class RelayClient:
             body=json.dumps({"symbols": list(symbols)}).encode("utf-8"),
             content_type="application/json",
         )
+
+    def document(self, item_id: str) -> bytes:
+        """The bytes of a forwarded document the relay holds as item ``item_id``.
+
+        The relay fetches them from Telegram on demand and sends them base64 in
+        JSON, so the transport's text body carries a PDF unchanged.
+        """
+        path = f"/documents/{urllib.parse.quote(item_id, safe='')}"
+        response = self._send("GET", path)
+        if not response.text.strip():
+            raise EmptyResponseError(
+                f"empty response body from {self._host()} for document "
+                f"{item_id} (fix the network)"
+            )
+        try:
+            payload = json.loads(response.text)
+            return base64.b64decode(payload["content_base64"], validate=True)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RelayError(
+                f"relay document {item_id} is not one: {response.text[:200]!r}"
+            ) from exc
 
     def _send(
         self,

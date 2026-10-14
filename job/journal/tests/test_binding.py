@@ -19,6 +19,9 @@ from journal.run import execute_run
 FIXTURE = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "docs", "samples", "relay-pull-fixture.json"
 )
+TC_FIXTURE = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "docs", "samples", "stockbit-tc-fixture.txt"
+)
 
 
 def _buy(ref, symbol, qty, price, when, book="IDX", source="stockbit"):
@@ -51,6 +54,12 @@ class FakeRelay:
 
     def push_known_us_symbols(self, symbols):
         pass
+
+    def document(self, item_id):
+        # The shared fixture's forwarded TC; its August Fills share no symbol
+        # with the declarations, so they bind nothing here.
+        with open(TC_FIXTURE, "rb") as fh:
+            return fh.read()
 
 
 def _declaration(relay_id, book, symbol, stop, entry_date, telegram_at, setup=None):

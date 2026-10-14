@@ -143,6 +143,33 @@ class KnownUsPushTest(unittest.TestCase):
             _client(transport).push_known_us_symbols(["META"])
 
 
+class DocumentTest(unittest.TestCase):
+    def test_a_document_is_fetched_by_item_id_and_decoded_from_base64(self):
+        transport = FakeTransport('{"id": "583201008", "content_base64": "JVBERi3/AA=="}')
+        content = _client(transport, secret="s3cret").document("583201008")
+
+        self.assertEqual(content, b"%PDF-\xff\x00")
+        [call] = transport.calls
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["url"], f"{BASE}/documents/583201008")
+        self.assertEqual(call["addresses"], ADDRESSES)
+        self.assertEqual(call["headers"]["Authorization"], "Bearer s3cret")
+
+    def test_an_empty_document_body_is_an_error(self):
+        with self.assertRaises(flex_client.EmptyResponseError):
+            _client(FakeTransport("")).document("1")
+
+    def test_a_body_that_is_not_a_document_is_an_error(self):
+        for text in ("<html>", '{"id": "1"}', '{"content_base64": "not base64!"}'):
+            with self.subTest(text=text), self.assertRaises(relay_client.RelayError):
+                _client(FakeTransport(text)).document("1")
+
+    def test_the_document_fetch_checks_for_interception_too(self):
+        transport = FakeTransport('{"content_base64": ""}', connected_ip="10.0.0.1")
+        with self.assertRaises(flex_client.InterceptionError):
+            _client(transport).document("1")
+
+
 class DefaultClientTest(unittest.TestCase):
     def setUp(self):
         self._saved = os.environ.pop(relay_client.URL_ENV, None)
