@@ -425,17 +425,30 @@ CREATE TABLE IF NOT EXISTS stop_declaration_binding (
     bound_at TEXT NOT NULL            -- when the run bound it
 );
 
+-- A Stop Declaration that lapsed (#54): it matched no proposal and no Trade
+-- within three trading days of its entry date, so it will never bind, even if
+-- the Fills for its key arrive late. Counted off the symbol's cached bars, else
+-- the Book's benchmark, else calendar days (#54). Keyed on `relay_id`, so a lapse is
+-- recorded once; a fresh declaration for the same key is a new event, not this one.
+CREATE TABLE IF NOT EXISTS stop_declaration_lapse (
+    relay_id  TEXT PRIMARY KEY REFERENCES stop_declaration_event(relay_id),
+    lapsed_on TEXT NOT NULL,          -- the run's as-of date
+    lapsed_at TEXT NOT NULL           -- UTC ISO, when the run lapsed it
+);
+
 -- What the journal said back to the trader through the relay (#53). One row per
 -- message that was sent; a failed send leaves no row, so the next run retries
 -- it. `undeclared` is the nag for a new-trade with no bound declaration, sent at
 -- most once per Trade per run day (`sent_on`, the run's as-of date). `refusal`
 -- answers a declaration whose stop sat at or above the entry average, once per
--- declaration (`relay_id`). `(book, symbol, entry_date)` and
+-- declaration (`relay_id`); so do `stop-held` and `frozen`, the refusals of a
+-- declaration for a Trade that already has a Stop or is frozen, and `lapsed`
+-- (#54). `(book, symbol, entry_date)` and
 -- `telegram_message_id` are what a reply to the message finds its Trade by.
 CREATE TABLE IF NOT EXISTS outbound_message (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id              INTEGER NOT NULL REFERENCES run(id),
-    kind                TEXT NOT NULL,    -- 'undeclared' | 'refusal'
+    kind                TEXT NOT NULL,    -- 'undeclared' | 'refusal' | 'stop-held' | 'frozen' | 'lapsed'
     book                TEXT NOT NULL,
     symbol              TEXT NOT NULL,
     entry_date          TEXT NOT NULL,
@@ -449,6 +462,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS outbound_message_undeclared_once_a_day
     ON outbound_message (book, symbol, entry_date, sent_on) WHERE kind = 'undeclared';
 CREATE UNIQUE INDEX IF NOT EXISTS outbound_message_refusal_once
     ON outbound_message (relay_id) WHERE kind = 'refusal';
+-- Every other message about one declaration (#54) also goes out once.
+CREATE UNIQUE INDEX IF NOT EXISTS outbound_message_per_declaration_once
+    ON outbound_message (kind, relay_id) WHERE relay_id IS NOT NULL;
 
 -- The risk/exposure denominator, and nothing more (SPEC §9). Mark-to-market
 -- NAV, not deposited capital; one job, not the book's equity curve. Identity is

@@ -2,12 +2,16 @@
 
 The relay holds the bot token, so the Mac messages the trader by asking the
 relay to send (:meth:`journal.relay_client.RelayClient.send`), over the same DoH
-path and secret as a pull. Two messages so far, both sent by the daily run after
-binding:
+path and secret as a pull. All are sent by the daily run after binding:
 
 - **Refusal.** A declaration whose stop sits at or above the entry average does
   not bind (ADR 0012). The bot names both prices and asks for a resend. Sent
-  once per declaration, however many runs see it still live.
+  once per declaration, however many runs see it still live. A declaration for
+  a Trade that already has a Stop is refused naming that Stop, and one for a
+  frozen Trade is refused saying so (#54), each once per declaration too.
+- **Lapse.** A declaration that matched nothing for three trading days lapsed
+  (#54). Sent once per declaration, read off the lapse record rather than the
+  bind pass, so a send that fails goes out on the next run.
 - **Undeclared Trade nag.** A ``new-trade`` still in the queue after binding has
   no bound declaration, and is held until it gets one (ADR 0012). The bot states
   its book, symbol, quantity, entry date and the trading days left in the grace
@@ -29,14 +33,23 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from typing import Iterable, Optional, Protocol
 
 from . import stops, trades
-from .binding import Refusal
+from .binding import ABOVE_ENTRY, FROZEN, STOP_HELD, Refusal
+from .declarations import StopDeclarationEvent, StopDeclarationLapseStore
 
 
 UNDECLARED = "undeclared"
-REFUSAL = "refusal"
+REFUSAL = "refusal"          # a stop at or above the entry average
+STOP_HELD_REFUSAL = "stop-held"
+FROZEN_REFUSAL = "frozen"
+LAPSED = "lapsed"
+
+_REFUSAL_KIND = {
+    ABOVE_ENTRY: REFUSAL, STOP_HELD: STOP_HELD_REFUSAL, FROZEN: FROZEN_REFUSAL,
+}
 
 
 class Sender(Protocol):
@@ -48,7 +61,7 @@ class Sender(Protocol):
 
 @dataclass(frozen=True)
 class Message:
-    kind: str  # UNDECLARED | REFUSAL
+    kind: str  # UNDECLARED | LAPSED | one of the refusal kinds
     book: str
     symbol: str
     entry_date: str
@@ -104,8 +117,15 @@ def send_due(
 def due_messages(
     conn: sqlite3.Connection, *, refusals: Iterable[Refusal], as_of: str
 ) -> list[Message]:
-    """Refusals not yet sent, then nags for new Trades not yet nagged ``as_of``."""
-    out = [_refusal(r) for r in refusals if not _refusal_sent(conn, r.relay_id)]
+    """Refusals and lapses not yet sent, then nags for new Trades not yet nagged ``as_of``."""
+    out = [
+        _refusal(r) for r in refusals
+        if not _sent(conn, _REFUSAL_KIND[r.reason], r.relay_id)
+    ]
+    out += [
+        _lapse(e) for e in StopDeclarationLapseStore(conn).lapsed()
+        if not _sent(conn, LAPSED, e.relay_id)
+    ]
     refused_now = {m.key for m in out}
     for p in trades.propose(conn):
         if p.kind != "new-trade":
@@ -118,12 +138,44 @@ def due_messages(
 
 
 def _refusal(r: Refusal) -> Message:
-    text = (
-        f"✗ {r.book} {r.symbol} SL {_number(r.stop)} is at or above the entry "
-        f"average {_number(r.entry_avg)}, entry {r.entry_date}, so it was not "
-        f"bound. Resend a stop below {_number(r.entry_avg)}."
+    said = _said(r.stop)
+    if r.reason == FROZEN:
+        text = (
+            f"✗ {r.book} {r.symbol} entry {r.entry_date} is frozen, so {said} was "
+            "not applied. A frozen Trade's stop and setup no longer change."
+        )
+    elif r.reason == STOP_HELD:
+        text = (
+            f"✗ {r.book} {r.symbol} entry {r.entry_date} already has "
+            f"SL {_number(r.held_stop)}, so {said} was not applied. A Stop is set "
+            "once and never changes."
+        )
+    else:
+        text = (
+            f"✗ {r.book} {r.symbol} {said} is at or above the entry "
+            f"average {_number(r.entry_avg)}, entry {r.entry_date}, so it was not "
+            f"bound. Resend a stop below {_number(r.entry_avg)}."
+        )
+    return Message(
+        _REFUSAL_KIND[r.reason], r.book, r.symbol, r.entry_date, text,
+        relay_id=r.relay_id,
     )
-    return Message(REFUSAL, r.book, r.symbol, r.entry_date, text, relay_id=r.relay_id)
+
+
+def _said(stop: Optional[float]) -> str:
+    """What the declaration said: ``SL 4,120``, or ``no sl`` for a decline."""
+    return "no sl" if stop is None else f"SL {_number(stop)}"
+
+
+def _lapse(e: StopDeclarationEvent) -> Message:
+    said = _said(e.stop)
+    on = date.fromisoformat(e.entry_date)
+    text = (
+        f"⌛ {e.book} {e.symbol} {said} for {on.day} {on:%b} lapsed, no fills "
+        "arrived. Check the order filled and the symbol is right; it will not "
+        "bind to a later entry."
+    )
+    return Message(LAPSED, e.book, e.symbol, e.entry_date, text, relay_id=e.relay_id)
 
 
 def _nag(conn: sqlite3.Connection, p: trades.Proposal, as_of: str) -> Message:
@@ -151,10 +203,11 @@ def _number(x: float) -> str:
     return f"{x:,.6f}".rstrip("0").rstrip(".")
 
 
-def _refusal_sent(conn: sqlite3.Connection, relay_id: str) -> bool:
+def _sent(conn: sqlite3.Connection, kind: str, relay_id: str) -> bool:
+    """Whether the once-per-declaration message ``kind`` already went out."""
     return conn.execute(
         "SELECT 1 FROM outbound_message WHERE kind = ? AND relay_id = ?",
-        (REFUSAL, relay_id),
+        (kind, relay_id),
     ).fetchone() is not None
 
 

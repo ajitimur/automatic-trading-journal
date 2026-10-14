@@ -23,9 +23,11 @@ trusting the clock.
 committing, since the confirm queue remains the only thing that derives a Trade
 (§5.1) — and it carries the nags (§11.4) as stated facts on the run record.
 The exception is the **bind** pass, after the books: a live declaration whose key
-matches a clean new Trade commits it (ADR 0012). The **messages** pass then tells
-the trader, through the relay, about every declaration refused and every new
-Trade still waiting for a stop (#53).
+matches a clean new Trade commits it (ADR 0012); one matching a committed Trade
+with no Stop sets that Stop, and one that matched nothing for three trading days
+lapses (#54). The **messages** pass then tells the trader, through the relay,
+about every declaration refused or lapsed and every new Trade still waiting for
+a stop (#53).
 
 Errors are recorded as data, not raised (§13.6): a book that fails advancing is
 written to its ``run_book`` row with ``status='error'``, a pass that fails is
@@ -235,7 +237,7 @@ def _pass_relay(conn, relay) -> PassOutcome:
     return PassOutcome(relay_intake.NO_BOOK, "relay", "ran", detail)
 
 
-def _pass_bind(conn) -> tuple[PassOutcome, tuple["binding.Refusal", ...]]:
+def _pass_bind(conn, as_of: str) -> tuple[PassOutcome, tuple["binding.Refusal", ...]]:
     """Bind live Stop Declarations to new Trades and auto-commit them (ADR 0012).
 
     Runs once per run, *after* the books, because it needs their Fills in the
@@ -245,7 +247,7 @@ def _pass_bind(conn) -> tuple[PassOutcome, tuple["binding.Refusal", ...]]:
     data and never sinks the run (§13.6). The refusals go on to the messages pass.
     """
     try:
-        result = binding.bind_and_commit(conn, now=_now_iso())
+        result = binding.bind_and_commit(conn, as_of=as_of, now=_now_iso())
     except Exception as exc:  # one pass failing must not sink the run (§13.6)
         return PassOutcome(relay_intake.NO_BOOK, "bind", "error", str(exc)), ()
     return PassOutcome(relay_intake.NO_BOOK, "bind", "ran", result.summary()), result.refusals
@@ -439,7 +441,7 @@ def execute_run(
     # Binding runs once, after the books, so every Fill intake has landed: a live
     # declaration whose key matches a clean new-trade commits the Trade without
     # confirm (ADR 0012, #50).
-    bind_pass, refusals = _pass_bind(conn)
+    bind_pass, refusals = _pass_bind(conn, as_of)
     messages_pass = _pass_messages(conn, relay, refusals, as_of, run_id)
     _record_passes(conn, run_id, [bind_pass, messages_pass])
     passes.extend([bind_pass, messages_pass])
