@@ -17,6 +17,8 @@ import {
   WEBHOOK_SECRET,
 } from './harness.ts';
 
+const USAGE_REPLY = '✗ Expected: [idx|us] SYMBOL STOP [bb|htf|oth], SYMBOL no sl, or /undo. E.g. BBRI 4120 htf';
+
 test('a valid declaration from the trader gets a reply echoing book, symbol, stop and entry date', async () => {
   const h = harness();
   const res = await h.relay.fetch(webhook(update('BBRI 4120', '2026-10-13T02:15:00Z')));
@@ -115,11 +117,11 @@ for (const stop of ['0', '-4120', 'abc', '4120x', 'NaN', 'Infinity', '1e3']) {
   });
 }
 
-for (const text of ['BBRI', 'hello there friend', '', '/start', 'BB-RI 4120']) {
+for (const text of ['BBRI', 'hello there friend friend friend', '', '/start', 'BB-RI 4120', 'BBRI no', 'us BBRI']) {
   test(`a malformed message ${JSON.stringify(text)} gets the expected form and is not stored`, async () => {
     const h = harness();
     await h.relay.fetch(webhook(update(text, '2026-10-13T02:15:00Z')));
-    assert.deepEqual(h.sent.map((m) => m.text), ['✗ Expected: SYMBOL STOP, e.g. BBRI 4120']);
+    assert.deepEqual(h.sent.map((m) => m.text), [USAGE_REPLY]);
     assert.deepEqual(await pull(h), { items: [] });
   });
 }

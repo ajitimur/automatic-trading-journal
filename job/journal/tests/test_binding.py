@@ -7,12 +7,18 @@ what committed, with which Stop and provenance, what stayed in the queue, and
 what the run row recorded.
 """
 
+import json
 import os
 import tempfile
 import unittest
 
 from journal import books, db, fills, flex, trades
+from journal.declarations import StopDeclarationStore
 from journal.run import execute_run
+
+FIXTURE = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "docs", "samples", "relay-pull-fixture.json"
+)
 
 
 def _buy(ref, symbol, qty, price, when, book="IDX", source="stockbit"):
@@ -43,17 +49,40 @@ class FakeRelay:
         self.acked.append(list(ids))
         self.items = [i for i in self.items if i.get("id") not in set(ids)]
 
+    def push_known_us_symbols(self, symbols):
+        pass
 
-def _declaration(relay_id, book, symbol, stop, entry_date, telegram_at):
+
+def _declaration(relay_id, book, symbol, stop, entry_date, telegram_at, setup=None):
+    parse = {
+        "kind": "declaration", "book": book, "symbol": symbol,
+        "stop": stop, "entry_date": entry_date,
+    }
+    if setup is not None:
+        parse["setup"] = setup
+    return {"id": relay_id, "telegram_at": telegram_at, "text": f"{symbol} {stop}", "parse": parse}
+
+
+def _decline(relay_id, book, symbol, entry_date, telegram_at, setup=None):
+    parse = {"kind": "decline", "book": book, "symbol": symbol, "entry_date": entry_date}
+    if setup is not None:
+        parse["setup"] = setup
+    return {"id": relay_id, "telegram_at": telegram_at, "text": f"{symbol} no sl", "parse": parse}
+
+
+def _undo(relay_id, book, symbol, entry_date, telegram_at, withdraws):
     return {
-        "id": relay_id,
-        "telegram_at": telegram_at,
-        "text": f"{symbol} {stop}",
+        "id": relay_id, "telegram_at": telegram_at, "text": "/undo",
         "parse": {
-            "kind": "declaration", "book": book, "symbol": symbol,
-            "stop": stop, "entry_date": entry_date,
+            "kind": "undo", "book": book, "symbol": symbol,
+            "entry_date": entry_date, "withdraws": withdraws,
         },
     }
+
+
+def _fixture_items():
+    with open(FIXTURE, encoding="utf-8") as fh:
+        return json.load(fh)["items"]
 
 
 class BindingTest(unittest.TestCase):
@@ -237,6 +266,127 @@ class BindingTest(unittest.TestCase):
         detail = self._bind_row(second.run_id)["detail"]
         self.assertIn("0 declaration(s) bound", detail)
         self.assertIn("0 refused", detail)
+
+    def _bound_relay_ids(self):
+        return {
+            r["relay_id"]: r["trade_id"]
+            for r in self.conn.execute("SELECT relay_id, trade_id FROM stop_declaration_binding")
+        }
+
+    def _seed_fixture_fills(self):
+        # Entries for every IDX symbol the shared fixture declares on 13 Oct.
+        fills.insert_fills(self.conn, [
+            _buy("b1", "BBRI", 1000, 4200, "2026-10-13T09:20:00+07:00"),
+            _buy("t1", "TLKM", 1000, 3000, "2026-10-13T09:40:00+07:00"),
+            _buy("a1", "ASII", 500, 5200, "2026-10-13T10:00:00+07:00"),
+        ])
+        self.conn.commit()
+
+    def test_the_shared_fixture_commits_what_it_declares_and_nothing_it_withdrew(self):
+        self._seed_fixture_fills()
+        execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
+
+        # The replacement binds, not the typo it replaced, and carries its Setup.
+        bbri = self._trade("BBRI")
+        self.assertEqual(bbri["stop"], 4120)
+        self.assertEqual(bbri["setup"], "high_tight_flag")
+        self.assertEqual(bbri["stop_provenance"], "recorded")
+        self.assertEqual(bbri["auto_committed"], 1)
+        # `no sl` commits as a Declined Stop, with no Stop.
+        tlkm = self._trade("TLKM")
+        self.assertIsNone(tlkm["stop"])
+        self.assertEqual(tlkm["stop_declined"], 1)
+        self.assertEqual(tlkm["auto_committed"], 1)
+        # The withdrawn ASII declaration binds nothing: its Trade is still held.
+        self.assertIsNone(self._trade("ASII"))
+        self.assertIn(
+            ("new-trade", "ASII"),
+            [(p.kind, p.symbol) for p in trades.propose(self.conn)],
+        )
+        self.assertEqual(
+            self._bound_relay_ids(),
+            {"583201002": bbri["id"], "583201003": tlkm["id"]},
+        )
+
+    def test_after_a_replace_both_events_are_on_record_and_only_the_newest_bound(self):
+        self._seed_fixture_fills()
+        execute_run(self.conn, as_of="2026-10-14", relay=FakeRelay(_fixture_items()))
+
+        events = StopDeclarationStore(self.conn).for_key("IDX", "BBRI", "2026-10-13")
+        self.assertEqual([(e.relay_id, e.stop) for e in events], [("583201001", 412), ("583201002", 4120)])
+        self.assertNotIn("583201001", self._bound_relay_ids())
+
+    def test_after_an_undo_nothing_binds_and_the_withdrawal_is_on_record(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "BBRI", 1000, 4200, "2026-10-13T09:20:00+07:00"),
+        ])
+        self.conn.commit()
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4120, "2026-10-13", "2026-10-13T02:15:00Z"),
+            _undo("2", "IDX", "BBRI", "2026-10-13", "2026-10-13T02:16:00Z", withdraws="1"),
+        ])
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertIsNone(self._trade("BBRI"))
+        self.assertEqual(self._bound_relay_ids(), {})
+        self.assertEqual(
+            [e.kind for e in StopDeclarationStore(self.conn).for_key("IDX", "BBRI", "2026-10-13")],
+            ["declared", "withdrawn"],
+        )
+
+    def test_a_declaration_after_an_undo_binds(self):
+        fills.insert_fills(self.conn, [
+            _buy("b1", "BBRI", 1000, 4200, "2026-10-13T09:20:00+07:00"),
+        ])
+        self.conn.commit()
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4120, "2026-10-13", "2026-10-13T02:15:00Z"),
+            _undo("2", "IDX", "BBRI", "2026-10-13", "2026-10-13T02:16:00Z", withdraws="1"),
+            _declaration("3", "IDX", "BBRI", 4100, "2026-10-13", "2026-10-13T02:17:00Z"),
+        ])
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertEqual(self._trade("BBRI")["stop"], 4100)
+        self.assertEqual(set(self._bound_relay_ids()), {"3"})
+
+    def test_a_declined_stop_commits_with_its_setup(self):
+        fills.insert_fills(self.conn, [
+            _buy("t1", "TLKM", 1000, 3000, "2026-10-13T09:40:00+07:00"),
+        ])
+        self.conn.commit()
+        relay = FakeRelay([
+            _decline("1", "IDX", "TLKM", "2026-10-13", "2026-10-13T02:30:00Z", setup="base_breakout"),
+        ])
+        result = execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        trade = self._trade("TLKM")
+        self.assertEqual(trade["stop_declined"], 1)
+        self.assertIsNone(trade["stop"])
+        self.assertEqual(trade["setup"], "base_breakout")
+        self.assertIn("1 declaration(s) bound", self._bind_row(result.run_id)["detail"])
+
+    def test_a_refused_stop_is_fixed_by_a_resend_on_a_later_run(self):
+        # 4300 sits above the 4200 entry, so it is refused; the trader resends
+        # and the replacement binds on the next run (ADR 0012).
+        fills.insert_fills(self.conn, [
+            _buy("b1", "BBRI", 1000, 4200, "2026-10-13T09:20:00+07:00"),
+        ])
+        self.conn.commit()
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4300, "2026-10-13", "2026-10-13T02:15:00Z"),
+        ])
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+        self.assertIsNone(self._trade("BBRI"))
+
+        relay.items = [
+            _declaration("2", "IDX", "BBRI", 4120, "2026-10-13", "2026-10-14T01:00:00Z", setup="other"),
+        ]
+        execute_run(self.conn, as_of="2026-10-15", relay=relay)
+
+        trade = self._trade("BBRI")
+        self.assertEqual(trade["stop"], 4120)
+        self.assertEqual(trade["setup"], "other")
+        self.assertEqual(set(self._bound_relay_ids()), {"2"})
 
 
 if __name__ == "__main__":

@@ -5,17 +5,27 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { createRelay, type PullItem, type Relay, type RelayStore, type StoredItem } from '../src/relay.ts';
+import {
+  createRelay,
+  keyOf,
+  type PullItem,
+  type RecentDeclaration,
+  type Relay,
+  type RelayStore,
+  type StoredItem,
+} from '../src/relay.ts';
 
 export const WEBHOOK_SECRET = 'webhook-secret';
 export const MAC_SECRET = 'mac-secret';
 export const TRADER = 4242;
 export const PULL_FIXTURE = join(resolve(import.meta.dirname, '..', '..'), 'docs', 'samples', 'relay-pull-fixture.json');
 
-// The store fake: the same contract as d1Store, held in a Map (insertion order
+// The store fake: the same contract as d1Store, held in Maps (insertion order
 // is arrival order).
 export function memoryStore(): RelayStore {
   const items = new Map<string, StoredItem>();
+  const recent = new Map<string, RecentDeclaration>();
+  let knownUs: string[] = [];
   return {
     async put(stored) {
       if (!items.has(stored.item.id)) items.set(stored.item.id, stored);
@@ -25,6 +35,21 @@ export function memoryStore(): RelayStore {
     },
     async delete(ids) {
       for (const id of ids) items.delete(id);
+    },
+    async recent() {
+      return [...recent.values()];
+    },
+    async putRecent(declared) {
+      recent.set(keyOf(declared.parse), declared);
+    },
+    async deleteRecent(ids) {
+      for (const [key, declared] of recent) if (ids.includes(declared.id)) recent.delete(key);
+    },
+    async knownUsSymbols() {
+      return [...knownUs];
+    },
+    async setKnownUsSymbols(symbols) {
+      knownUs = [...symbols];
     },
   };
 }
@@ -109,4 +134,15 @@ export async function sendFixtureMessages(h: Harness): Promise<PullBody> {
   return fixture;
 }
 
-export const ack =(h: Harness, ids: string[]) => h.relay.fetch(mac('/ack', { method: 'POST', body: { ids } }));
+export const ack = (h: Harness, ids: string[]) => h.relay.fetch(mac('/ack', { method: 'POST', body: { ids } }));
+
+// The Mac's push of the symbols it knows on the US book.
+export const pushKnownUs = (h: Harness, symbols: unknown) =>
+  h.relay.fetch(mac('/known-us-symbols', { method: 'PUT', body: { symbols } }));
+
+// The trader sends `text` at `sentAtIso`; returns the relay's reply.
+export async function say(h: Harness, text: string, sentAtIso: string, updateId?: number): Promise<string | undefined> {
+  const before = h.sent.length;
+  await h.relay.fetch(webhook(update(text, sentAtIso, TRADER, updateId)));
+  return h.sent.slice(before).at(-1)?.text;
+}

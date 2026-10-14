@@ -4,6 +4,8 @@ After intake has landed the Fills, a live **Stop Declaration** whose
 ``(book, symbol, entry_date)`` matches a clean ``new-trade`` proposal **binds**
 to it, and the Trade commits — with the declared Stop and ``recorded``
 provenance — through the one confirm door, no ``journal confirm`` (ADR 0012).
+A declared ``no sl`` binds the same way and commits a **Declined Stop**, and a
+declared Setup lands with the commit either way (#51).
 
 What binds, and what does not:
 
@@ -30,7 +32,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from . import trades
-from .declarations import StopDeclarationBindingStore, StopDeclarationStore
+from .declarations import DECLINED, StopDeclarationBindingStore, StopDeclarationStore
 
 
 @dataclass(frozen=True)
@@ -63,28 +65,37 @@ def bind_and_commit(conn: sqlite3.Connection, *, now: str) -> BindResult:
 
     stops_by_trade: dict[trades.CohortKey, float] = {}
     stop_set_at: dict[trades.CohortKey, str] = {}
+    declined: set[trades.CohortKey] = set()
+    setups: dict[trades.CohortKey, str] = {}
     to_bind: dict[trades.CohortKey, str] = {}
     refused = 0
     for key, decl in live.items():
         proposal = new_trades.get(key)
         if proposal is None:
             continue  # no clean new-trade to bind to — the declaration stays live
-        if proposal.avg_price and decl.stop >= proposal.avg_price:
+        if decl.kind == DECLINED:
+            declined.add(key)
+        elif proposal.avg_price and decl.stop >= proposal.avg_price:
             # An inverted R never reaches the store; the declaration stays unbound
             # and a corrected one binds on a later run (ADR 0012).
             refused += 1
             continue
-        stops_by_trade[key] = decl.stop
-        stop_set_at[key] = decl.telegram_at
+        else:
+            stops_by_trade[key] = decl.stop
+            stop_set_at[key] = decl.telegram_at
+        if decl.setup is not None:
+            setups[key] = decl.setup
         to_bind[key] = decl.relay_id
 
-    if not stops_by_trade:
+    if not to_bind:
         return BindResult(bound=0, committed=0, refused=refused)
 
     result = trades.confirm(
         conn,
         stops_by_trade=stops_by_trade,
         stop_set_at=stop_set_at,
+        declined=declined,
+        setups_by_trade=setups,
         auto_commit=True,
     )
 

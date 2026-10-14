@@ -3,17 +3,66 @@
     {
       "id": "583201001",
       "telegram_at": "2026-10-13T02:15:00Z",
-      "text": "BBRI 4120",
+      "text": "BBRI 412",
       "parse": {
         "kind": "declaration",
         "book": "IDX",
         "symbol": "BBRI",
-        "stop": 4120,
+        "stop": 412,
         "entry_date": "2026-10-13"
       }
     },
     {
       "id": "583201002",
+      "telegram_at": "2026-10-13T02:16:00Z",
+      "text": "bbri 4120 htf",
+      "parse": {
+        "kind": "declaration",
+        "book": "IDX",
+        "symbol": "BBRI",
+        "stop": 4120,
+        "setup": "high_tight_flag",
+        "entry_date": "2026-10-13"
+      }
+    },
+    {
+      "id": "583201003",
+      "telegram_at": "2026-10-13T02:30:00Z",
+      "text": "TLKM no sl",
+      "parse": {
+        "kind": "decline",
+        "book": "IDX",
+        "symbol": "TLKM",
+        "entry_date": "2026-10-13"
+      }
+    },
+    {
+      "id": "583201004",
+      "telegram_at": "2026-10-13T03:00:00Z",
+      "text": "ASII 5000 bb",
+      "parse": {
+        "kind": "declaration",
+        "book": "IDX",
+        "symbol": "ASII",
+        "stop": 5000,
+        "setup": "base_breakout",
+        "entry_date": "2026-10-13"
+      }
+    },
+    {
+      "id": "583201005",
+      "telegram_at": "2026-10-13T03:01:00Z",
+      "text": "/undo",
+      "parse": {
+        "kind": "undo",
+        "book": "IDX",
+        "symbol": "ASII",
+        "entry_date": "2026-10-13",
+        "withdraws": "583201004"
+      }
+    },
+    {
+      "id": "583201006",
       "telegram_at": "2026-10-13T18:00:00Z",
       "text": "amd 182.5",
       "parse": {
@@ -21,6 +70,19 @@
         "book": "US",
         "symbol": "AMD",
         "stop": 182.5,
+        "entry_date": "2026-10-13"
+      }
+    },
+    {
+      "id": "583201007",
+      "telegram_at": "2026-10-13T18:05:00Z",
+      "text": "us meta 590 oth",
+      "parse": {
+        "kind": "declaration",
+        "book": "US",
+        "symbol": "META",
+        "stop": 590,
+        "setup": "other",
         "entry_date": "2026-10-13"
       }
     }

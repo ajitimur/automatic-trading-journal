@@ -1,4 +1,4 @@
-"""The relay intake pass: pull, archive, record, then acknowledge (ADR 0011, #49).
+"""The relay intake pass: pull, archive, record, acknowledge, push (ADR 0011, #49, #51).
 
 The relay holds what the trader sent the bot until the Mac pulls it. Each run
 takes everything it holds and, in this order:
@@ -6,9 +6,12 @@ takes everything it holds and, in this order:
 1. files every item verbatim in the keep-forever raw tier, both halves (the
    filesystem archive and ``raw_document``), because a declaration is a source
    document like a Flex statement or a TC (SPEC §13.5);
-2. records each declaration as a :class:`~journal.declarations.StopDeclarationEvent`;
+2. records each declaration, decline and undo as a
+   :class:`~journal.declarations.StopDeclarationEvent`;
 3. commits;
-4. and only then acknowledges, which is what lets the relay delete the items.
+4. and only then acknowledges, which is what lets the relay delete the items;
+5. then pushes the symbols the journal knows on the US book, so the relay reads
+   a 4-letter one of them as US rather than IDX.
 
 Acknowledging last is the durability rule. A run that dies anywhere before the
 acknowledgement leaves the relay holding everything, so the next run pulls the
@@ -16,11 +19,11 @@ same items again, and both the archive and the event store ignore an item they
 already hold. Losing an acknowledgement costs a re-pull; acknowledging early
 could cost a Stop.
 
-An item that is not a declaration (a grammar this job predates) is archived and
+An item of a kind this job does not know (a grammar it predates) is archived and
 acknowledged but not recorded: the raw tier keeps it, so a later job can replay
-it. A *declaration* missing a field it needs is archived but not acknowledged,
-and the pass reports it as an error. It stays at the relay rather than being
-dropped, and the run record says the wire contract has drifted.
+it. An item of a *known* kind missing a field it needs is archived but not
+acknowledged, and the pass reports it as an error. It stays at the relay rather
+than being dropped, and the run record says the wire contract has drifted.
 
 Nothing binds or commits a Trade here.
 """
@@ -33,13 +36,17 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 from . import backup, db
-from .declarations import StopDeclarationEvent, StopDeclarationStore
+from .declarations import DECLARED, DECLINED, WITHDRAWN, StopDeclarationEvent, StopDeclarationStore
+from .stops import SETUP_VOCABULARY
 
 # The raw-tier kind every relay item is filed under.
 RELAY_ITEM_KIND = "relay-item"
 
-# The book a relay item is filed under when it names none (an `/undo`, say).
+# The book a relay item is filed under when it names none.
 NO_BOOK = "RELAY"
+
+# The relay's parse kinds, and the event each records.
+_EVENT_KIND = {"declaration": DECLARED, "decline": DECLINED, "undo": WITHDRAWN}
 
 
 class Relay(Protocol):
@@ -49,6 +56,9 @@ class Relay(Protocol):
         ...
 
     def acknowledge(self, ids: Sequence[str]) -> None:
+        ...
+
+    def push_known_us_symbols(self, symbols: Sequence[str]) -> None:
         ...
 
 
@@ -69,7 +79,7 @@ class IntakeCounts:
     def summary(self) -> str:
         return (
             f"{self.pulled} item(s) pulled, {self.archived} archived, "
-            f"{self.recorded} declaration(s) recorded"
+            f"{self.recorded} declaration event(s) recorded"
         )
 
 
@@ -96,11 +106,11 @@ def take_in(
             continue
         relay_id = str(item["id"])
         parse = item.get("parse") or {}
-        if parse.get("kind") != "declaration":
+        if parse.get("kind") not in _EVENT_KIND:
             to_ack.append(relay_id)
             continue
         try:
-            event = _declaration(item, parse, raw_ref=raw_ref, now=now)
+            event = _event(item, parse, raw_ref=raw_ref, now=now)
         except (KeyError, TypeError, ValueError) as exc:
             malformed.append(f"{relay_id} ({exc!r})")
             continue
@@ -120,6 +130,10 @@ def take_in(
                 f"them: {exc}"
             ) from exc
     problems = []
+    try:
+        relay.push_known_us_symbols(known_us_symbols(conn))
+    except Exception as exc:  # the relay keeps the last list it had
+        problems.append(f"known-US push failed: {exc}")
     if malformed:
         problems.append(
             f"{len(malformed)} declaration(s) malformed, archived and left at "
@@ -130,6 +144,17 @@ def take_in(
     if problems:
         raise RelayIntakeError(f"{counts.summary()}; {'; '.join(problems)}")
     return counts.summary()
+
+
+def known_us_symbols(conn: sqlite3.Connection) -> list[str]:
+    """Every symbol the journal has a Fill or a Trade for on the US book, sorted."""
+    return [
+        r["symbol"]
+        for r in conn.execute(
+            "SELECT symbol FROM fill WHERE book = 'US' "
+            "UNION SELECT symbol FROM trade WHERE book = 'US' ORDER BY symbol"
+        )
+    ]
 
 
 def _archive(conn: sqlite3.Connection, item: dict, *, archive_dir: str, now: str) -> int:
@@ -147,16 +172,26 @@ def _archive(conn: sqlite3.Connection, item: dict, *, archive_dir: str, now: str
     )
 
 
-def _declaration(item: dict, parse: dict, *, raw_ref: int, now: str) -> StopDeclarationEvent:
-    stop = parse["stop"]
-    if isinstance(stop, bool) or not isinstance(stop, (int, float)):
-        raise TypeError(f"stop {stop!r} is not a number")
+def _event(item: dict, parse: dict, *, raw_ref: int, now: str) -> StopDeclarationEvent:
+    kind = _EVENT_KIND[parse["kind"]]
+    stop = None
+    if kind == DECLARED:
+        stop = parse["stop"]
+        if isinstance(stop, bool) or not isinstance(stop, (int, float)):
+            raise TypeError(f"stop {stop!r} is not a number")
+    setup = None
+    if kind != WITHDRAWN:
+        setup = parse.get("setup")
+        if setup is not None and setup not in SETUP_VOCABULARY:
+            raise ValueError(f"setup {setup!r} is not one of {', '.join(SETUP_VOCABULARY)}")
     return StopDeclarationEvent(
         relay_id=str(item["id"]),
+        kind=kind,
         book=_text(parse, "book"),
         symbol=_text(parse, "symbol"),
         entry_date=_text(parse, "entry_date"),
         stop=stop,
+        setup=setup,
         telegram_at=_text(item, "telegram_at"),
         recorded_at=now,
         raw_ref=raw_ref,

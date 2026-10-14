@@ -587,6 +587,7 @@ def confirm(
     demand_stop: bool = False,
     stop_set_at: Optional[Mapping[CohortKey, str]] = None,
     auto_commit: bool = False,
+    setups_by_trade: Optional[Mapping[CohortKey, str]] = None,
 ) -> ConfirmResult:
     """Commit the proposals: land new Trades, apply add-fills/restatements, allocate exits.
 
@@ -633,12 +634,18 @@ def confirm(
     re-derived, and exits — a same-day round trip included — stay in the queue.
     The caller (``journal.binding``) has already dropped any declaration whose
     stop sits at or above entry, so the guard below never fires in this mode.
+
+    ``setups_by_trade`` sets the Setup, per cohort, on each new Trade that
+    lands, so a declared Setup arrives with the commit (#51). It answers
+    nothing: a Setup alone neither satisfies the stop demand nor lets a Trade
+    through the auto-commit door.
     """
     overrides = overrides or {}
     reasons = reasons or {}
     stops_by_trade = stops_by_trade or {}
     declined_set = set(declined or ())
     stop_set_at = stop_set_at or {}
+    setups_by_trade = setups_by_trade or {}
     result = ConfirmResult()
     proposals = propose(conn)
 
@@ -717,6 +724,8 @@ def confirm(
                 "UPDATE trade SET stop_declined = 1 WHERE id = ?", (trade_id,)
             )
             result.stops_declined += 1
+        if key in setups_by_trade:
+            stops.set_setup(conn, trade_id, setups_by_trade[key])
 
     # Exits — skipped entirely when auto-committing, so a same-day round trip's
     # sell stays in the queue for the weekly bulk exit-reason confirm (ADR 0012).
