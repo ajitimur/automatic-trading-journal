@@ -106,6 +106,14 @@ function actionForm(action: string, tradeId: number, inner: string, extra = ''):
     <input type="hidden" name="trade_id" value="${tradeId}">${extra}${inner}</form>`;
 }
 
+// A Trade a bound Stop Declaration committed without confirm (ADR 0012). Nobody
+// looked at its quantity before it landed; this glance is the only human check.
+const AUTO_TITLE = 'Committed from a bound Stop Declaration, without confirm. Check the quantity.';
+
+function autoCommittedPill(t: ReviewTrade): string {
+  return t.auto_committed ? `<span class="pill warn" title="${AUTO_TITLE}">auto-committed</span>` : '';
+}
+
 function closedDetail(t: ReviewTrade): string {
   const a = t.adherence;
   const realized = realizedLabel(t);
@@ -123,13 +131,14 @@ function closedDetail(t: ReviewTrade): string {
   const chasedPill = t.chased ? `<span class="pill warn">chased ${t.stop_distance_adr?.toFixed(2)} ADR</span>` : '';
   const provPill = t.stop_provenance && t.stop_provenance !== 'recorded'
     ? `<span class="pill ${t.stop === null ? 'bad' : 'mute'}">stop ${esc(t.stop_provenance)}</span>` : '';
+  const autoPill = autoCommittedPill(t);
 
   return `<div class="card">
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">
       <h3 style="font-size:20px;margin:0">${esc(t.symbol)}</h3>
       <span class="pill mute">${esc(t.book)}</span>
       ${t.setup ? `<span class="pill mute">${esc(t.setup.replace(/_/g, ' '))}</span>` : ''}
-      ${chasedPill}${provPill}
+      ${chasedPill}${provPill}${autoPill}
       ${t.reviewed_at ? '<span class="pill good">reviewed</span>' : ''}
       <span style="margin-left:auto;font-size:19px" class="${cls(t.realized_r)}">${realized}</span>
     </div>
@@ -201,6 +210,7 @@ function openDetail(t: ReviewTrade): string {
       <h3 style="font-size:20px;margin:0">${esc(t.symbol)}</h3>
       <span class="pill mute">${esc(t.book)}</span>
       <span class="pill">open</span>
+      ${autoCommittedPill(t)}
       ${t.stop === null ? '<span class="pill bad">no stop</span>' : ''}
       ${t.setup === null ? '<span class="pill bad">no setup</span>' : ''}
       <span style="margin-left:auto;font-size:19px" class="${cls(t.open_r)}">${t.open_r === null ? '—' : fmtR(t.open_r) + ' open'}</span>
@@ -265,7 +275,7 @@ function bannerSection(items: BannerItem[]): string {
     `<li class="sev-${x.severity}"><b>${esc(x.title)}</b> — ${esc(x.body)}</li>`).join('');
   return `<section class="banner"><h2>Needs attention</h2>
     ${items.length ? `<ul>${li}</ul>` : '<p class="muted" style="font-size:13px;margin:0">Nothing needs attention — no stop holes, no held enrichment, no drift.</p>'}
-    <p class="muted" style="font-size:11.5px;margin:8px 0 0">Intake and equity are stated facts, not alarms; <b>insufficient_history</b> is a no-action item, distinct from a repair.</p>
+    <p class="muted" style="font-size:11.5px;margin:8px 0 0">Relay pull, intake and equity are stated facts, not alarms; <b>insufficient_history</b> is a no-action item, distinct from a repair.</p>
     ${idxEquityForm}</section>`;
 }
 
@@ -278,6 +288,7 @@ function listRow(t: ReviewTrade, selected: string | null): string {
     ? ` → ${day(t.final_exit_date)}`
     : ` · held ${t.days_held ?? 0}d`;
   const noStop = t.stop === null ? ' · <span style="color:var(--bad)">no stop</span>' : '';
+  const auto = t.auto_committed ? ` · <span style="color:var(--warn)" title="${AUTO_TITLE}">auto-committed</span>` : '';
   // `#work` because selecting a Trade is a full page load — the surface has no
   // JavaScript — and without a fragment the browser lands at the top, putting
   // the banner and the counts table between the reader and the workbench they
@@ -286,7 +297,7 @@ function listRow(t: ReviewTrade, selected: string | null): string {
   // reads as switching panes rather than as the page jumping.
   return `<a class="ti${sel}" href="?trade=${t.id}#work">
     <span class="s">${esc(t.symbol)}</span><span class="muted" style="font-size:11px"> ${esc(t.book)}</span>
-    ${right}<span class="m">${day(t.entry_date)}${tail}${noStop}</span></a>`;
+    ${right}<span class="m">${day(t.entry_date)}${tail}${noStop}${auto}</span></a>`;
 }
 
 function group(label: string, ts: ReviewTrade[], selected: string | null, note = ''): string {
