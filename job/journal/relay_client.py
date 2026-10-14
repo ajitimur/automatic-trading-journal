@@ -4,7 +4,9 @@ The relay's Mac-facing contract, as pinned by
 ``docs/samples/relay-pull-fixture.json``:
 
 * ``GET /pull`` returns ``{"items": [...]}``, unacknowledged items in arrival
-  order, each ``{id, telegram_at, text, parse}``.
+  order, each ``{id, telegram_at, text, parse}``. A declaration made by
+  answering a nag also carries ``answers: {nag, via}``, the nag's Telegram
+  message id and ``"reply"`` or ``"button"`` (#55); it is archived, not read.
 * ``POST /ack`` takes ``{"ids": [...]}``, deletes those items, answers 204, and
   is idempotent.
 * ``GET /documents/<id>`` returns ``{"id", "content_base64"}``, the bytes of a
@@ -152,16 +154,16 @@ class RelayClient:
         answer; ``offer`` adds the one-tap button (#55). An empty body is the
         ISP's interception, not a delivery, so it raises like a pull does.
         """
-        payload: dict = {"text": text}
+        request: dict = {"text": text}
         if trade is not None:
             book, symbol, entry_date = trade
-            payload["trade"] = {"book": book, "symbol": symbol, "entry_date": entry_date}
+            request["trade"] = {"book": book, "symbol": symbol, "entry_date": entry_date}
         if offer is not None:
-            payload["offer"] = {"stop": offer.stop, "entry_date": offer.entry_date}
+            request["offer"] = {"stop": offer.stop, "entry_date": offer.entry_date}
         response = self._send(
             "POST",
             "/send",
-            body=json.dumps(payload).encode("utf-8"),
+            body=json.dumps(request).encode("utf-8"),
             content_type="application/json",
         )
         payload = self._json(

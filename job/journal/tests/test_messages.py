@@ -309,6 +309,22 @@ class MessagesTest(unittest.TestCase):
         self.assertIsNone(offer)
         self.assertNotIn("Same as", text)
 
+    def test_no_offer_from_an_old_trade_whose_bars_stopped_short(self):
+        # The symbol's cached bars ended weeks ago, so they count no trading
+        # days since; the calendar still says it is a separate entry.
+        self._fills(_buy("b1", "BBRI", 1000, 4200, "2026-09-01T09:20:00+07:00"))
+        relay = FakeRelay([
+            _declaration("1", "IDX", "BBRI", 4120, "2026-09-01", "2026-09-01T02:15:00Z"),
+        ])
+        execute_run(self.conn, as_of="2026-09-01", relay=relay)
+        self._bars("IDX", "BBRI", "2026-09-01", "2026-09-02")
+        self._fills(_buy("b2", "BBRI", 500, 4250, "2026-10-14T09:10:00+07:00"))
+        execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        [(_, trade, offer)] = relay.calls
+        self.assertEqual(trade, ("IDX", "BBRI", "2026-10-14"))
+        self.assertIsNone(offer)
+
     def test_no_offer_from_the_same_symbol_on_the_other_book(self):
         self._fills(_buy("u1", "BBRI", 10, 42, "2026-10-13T10:00:00-04:00", book="US", source="ibkr"))
         relay = FakeRelay([

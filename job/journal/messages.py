@@ -50,6 +50,11 @@ REFUSAL = "refusal"
 # How far back a split-day nag looks for the earlier day's Stop. A Trade entered
 # longer ago than this is a separate entry, not the first half of a split fill.
 SPLIT_DAY_TRADING_DAYS = 3
+# A calendar ceiling beside it: cached bars can stop short (a symbol whose bars
+# ended at an old exit counts few trading days since), so the trading-day count
+# alone would offer a Stop from months back. Seven days covers three trading
+# days across a weekend and a holiday.
+SPLIT_DAY_CALENDAR_DAYS = 7
 
 
 class Sender(Protocol):
@@ -171,7 +176,8 @@ def _split_day_offer(
     """The Stop of this symbol's latest earlier Trade on the Book, if recent enough.
 
     Counted in trading days like the grace window, falling back to calendar
-    days when no bars are cached (ADR 0009's fallback).
+    days when no bars are cached (ADR 0009's fallback), and never further back
+    than :data:`SPLIT_DAY_CALENDAR_DAYS` however the bars count.
     """
     row = conn.execute(
         "SELECT entry_date, stop FROM trade WHERE book = ? AND symbol = ? "
@@ -180,10 +186,11 @@ def _split_day_offer(
     ).fetchone()
     if row is None:
         return None
+    calendar = (date.fromisoformat(entry_date) - date.fromisoformat(row["entry_date"])).days
+    if calendar > SPLIT_DAY_CALENDAR_DAYS:
+        return None
     elapsed = stops.trading_days_after(conn, book, symbol, row["entry_date"], entry_date)
-    if elapsed is None:
-        elapsed = (date.fromisoformat(entry_date) - date.fromisoformat(row["entry_date"])).days
-    if elapsed > SPLIT_DAY_TRADING_DAYS:
+    if (calendar if elapsed is None else elapsed) > SPLIT_DAY_TRADING_DAYS:
         return None
     return Offer(stop=row["stop"], entry_date=row["entry_date"])
 

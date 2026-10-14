@@ -284,11 +284,6 @@ export function createRelay(deps: RelayDeps): Relay {
     // it names no symbol, and is the grammar error.
     const bare = isBare(text);
     const answers: Answers | undefined = bare && nag ? { nag: nag.message_id, via: 'reply' } : undefined;
-    const hold = (parse: PullItem['parse']) =>
-      store.put({
-        item: { id, telegram_at: telegramAt, text, parse, ...(answers ? { answers } : {}) },
-        stored_at: clock().toISOString(),
-      });
 
     const parse: Parsed = !bare
       ? parseMessage(text, sentAt, new Set(await store.knownUsSymbols()))
@@ -304,22 +299,26 @@ export function createRelay(deps: RelayDeps): Relay {
         reply = '✗ Nothing to undo';
       } else {
         const { book, symbol, entry_date } = withdrawn.parse;
-        await hold({ kind: 'undo', book, symbol, entry_date, withdraws: withdrawn.id });
+        await holdWithText(text)({ kind: 'undo', book, symbol, entry_date, withdraws: withdrawn.id });
         reply = `↩ Withdrew ${describe(withdrawn.parse)}`;
       }
     } else {
-      reply = await declare({ id, telegram_at: telegramAt, parse }, hold);
+      reply = await declare({ id, telegram_at: telegramAt, parse }, text, answers);
     }
     await telegram.sendMessage(message.chat.id, reply);
     return ok;
   }
 
-  // Records a declaration as the latest for its key, holds it for the Mac, and
-  // returns the reply echoing how it was read.
-  async function declare(declared: RecentDeclaration, hold: (parse: Declared) => Promise<void>): Promise<string> {
+  // Records a declaration as the latest for its key, holds it for the Mac as
+  // said in `text` (answering a nag, when `answers` says so), and returns the
+  // reply echoing how it was read.
+  async function declare(declared: RecentDeclaration, text: string, answers?: Answers): Promise<string> {
     const replaced = await remember(declared);
-    await hold(declared.parse);
-    const { parse } = declared;
+    const { id, telegram_at, parse } = declared;
+    await store.put({
+      item: { id, telegram_at, text, parse, ...(answers ? { answers } : {}) },
+      stored_at: clock().toISOString(),
+    });
     return `✓ ${describe(parse)}${replaced ? ` (replaced ${value(replaced)} → ${value(parse)})` : ''}`;
   }
 
@@ -343,14 +342,8 @@ export function createRelay(deps: RelayDeps): Relay {
     }
     const telegramAt = isoSeconds(clock());
     const parse: Declaration = { kind: 'declaration', ...nag.trade, stop: nag.offer.stop };
-    const answers: Answers = { nag: nag.message_id, via: 'button' };
     await store.putNag({ ...nag, taken_by: id });
-    const reply = await declare({ id, telegram_at: telegramAt, parse }, (held) =>
-      store.put({
-        item: { id, telegram_at: telegramAt, text: 'Yes', parse: held, answers },
-        stored_at: clock().toISOString(),
-      }),
-    );
+    const reply = await declare({ id, telegram_at: telegramAt, parse }, 'Yes', { nag: nag.message_id, via: 'button' });
     await telegram.answerCallback(callback.id);
     await telegram.sendMessage(config.userId, reply);
   }
