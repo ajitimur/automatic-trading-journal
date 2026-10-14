@@ -450,6 +450,20 @@ class ForwardedTcTest(_RunTestCase):
         [archived] = self._archived_tcs()
         self.assertTrue(archived.endswith(".pdf"))
 
+    def test_a_pdf_with_bytes_before_its_header_is_still_read_as_a_pdf(self):
+        # Readers find %PDF anywhere in the first 1024 bytes, so a mailer's
+        # preamble does not make a TC text.
+        pdf = b"\r\n\xef\xbb\xbf junk\n%PDF-1.4 the real thing"
+        relay = FakeRelay([_forwarded("p2")], documents={"p2": pdf})
+        with unittest.mock.patch(
+            "journal.stockbit.extract_text", lambda path: _tc_bytes(TC_FIXTURE).decode("utf-8")
+        ):
+            execute_run(self.conn, as_of="2026-10-14", relay=relay)
+
+        self.assertEqual(self._fill_count(), TC_FIXTURE_FILLS)
+        [archived] = self._archived_tcs()
+        self.assertTrue(archived.endswith(".pdf"))
+
     def test_forwarding_the_same_tc_twice_adds_no_fills(self):
         tc = _tc_bytes(TC_FIXTURE)
         relay = FakeRelay([_forwarded("t1")], documents={"t1": tc, "t2": tc})

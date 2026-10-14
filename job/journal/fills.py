@@ -111,7 +111,7 @@ def import_stockbit_text(
     db.record_raw_document(
         conn,
         book=stockbit.BOOK,
-        kind="stockbit-tc",
+        kind=stockbit.RAW_KIND,
         fetched_at=fetched_at or datetime.now(timezone.utc).isoformat(),
         content=tc_text,
     )

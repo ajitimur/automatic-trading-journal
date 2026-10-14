@@ -190,7 +190,7 @@ export function createRelay(deps: RelayDeps): Relay {
     const sentAt = new Date(message.date * 1000);
     const id = String(update.update_id);
     const telegramAt = isoSeconds(sentAt);
-    const holdAs = (text: string) => (parse: PullItem['parse']) =>
+    const holdWithText = (text: string) => (parse: PullItem['parse']) =>
       store.put({ item: { id, telegram_at: telegramAt, text, parse }, stored_at: clock().toISOString() });
 
     if (message.document) {
@@ -198,7 +198,7 @@ export function createRelay(deps: RelayDeps): Relay {
       let reply = '✗ Only Stockbit TC PDFs are accepted';
       if (isPdf(doc)) {
         const { file_name, file_size } = doc;
-        await holdAs(message.caption ?? '')({ kind: 'document', book: 'IDX', file_id: doc.file_id, file_name, file_size });
+        await holdWithText(message.caption ?? '')({ kind: 'document', book: 'IDX', file_id: doc.file_id, file_name, file_size });
         // Kept apart from the item, which goes once the Mac acknowledges it.
         await store.putPdfDay(dateIn(sentAt, EXCHANGE_TZ.IDX));
         reply = `✓ Got ${file_name ?? 'the PDF'}; it goes in on the next run`;
@@ -208,7 +208,7 @@ export function createRelay(deps: RelayDeps): Relay {
     }
     if (typeof message.text !== 'string') return ok;
     const text = message.text;
-    const hold = holdAs(text);
+    const hold = holdWithText(text);
 
     const parse = parseMessage(text, sentAt, new Set(await store.knownUsSymbols()));
     let reply: string;

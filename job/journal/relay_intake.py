@@ -61,10 +61,6 @@ NO_BOOK = "RELAY"
 # The relay's parse kind for a forwarded TC PDF.
 DOCUMENT = "document"
 
-# The raw-tier kind and book a TC is filed under, matching `journal drop`, so a
-# TC both dropped and forwarded is archived once.
-TC_KIND = "stockbit-tc"
-
 # The relay's parse kinds, and the event each records.
 _EVENT_KIND = {"declaration": DECLARED, "decline": DECLINED, "undo": WITHDRAWN}
 
@@ -232,11 +228,12 @@ def _take_in_tc(
         content = relay.document(relay_id)
     except Exception as exc:
         raise _LeaveAtRelay(f"TC {relay_id} could not be fetched, left at the relay: {exc}") from exc
-    is_pdf = content.startswith(b"%PDF")
+    # Where PDF readers look for the header: anywhere in the first 1024 bytes.
+    is_pdf = b"%PDF" in content[:1024]
     # Archived before it is parsed, as `journal drop` does: a quarantined
     # document is what a later parser fix needs.
     backup.archive_raw(
-        archive_dir, book=stockbit.BOOK, kind=TC_KIND, content=content, ext="pdf" if is_pdf else "txt"
+        archive_dir, book=stockbit.BOOK, kind=stockbit.RAW_KIND, content=content, ext="pdf" if is_pdf else "txt"
     )
     try:
         text = _tc_text(content) if is_pdf else content.decode("utf-8")
